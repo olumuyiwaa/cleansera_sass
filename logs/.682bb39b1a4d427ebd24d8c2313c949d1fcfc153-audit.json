@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "logs/.682bb39b1a4d427ebd24d8c2313c949d1fcfc153-audit.json",
+    "files": [
+        {
+            "date": 1788814831047,
+            "name": "logs/cleansera-2026-09-07.log",
+            "hash": "6cd45b21dcf33bb47ea98fc10a9af7a2da709763ad9daaf15025c2fe28ac4c5e"
+        }
+    ],
+    "hashType": "sha256"
+}

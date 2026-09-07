@@ -37,4 +37,20 @@ async function removeAssignment(req, res, next) {
   }
 }
 
+async function suggestCleaners(req, res, next) {
+  try {
+    const bookingId = req.query.bookingId || req.body && req.body.bookingId;
+    const limit = parseInt(req.query.limit || req.body && req.body.limit || '5', 10);
+    if (!bookingId) {
+      const err = new Error('bookingId required');
+      err.status = 422;
+      throw err;
+    }
+    const list = await service.suggestCleaners(req.businessId, bookingId, limit);
+    return success(res, 200, list);
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = { list, createAssignment, getAssignment, removeAssignment };

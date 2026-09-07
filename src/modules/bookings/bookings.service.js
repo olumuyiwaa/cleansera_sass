@@ -22,21 +22,30 @@ async function getBookingById(businessId, id) {
 }
 
 async function createBooking(businessId, actorUserId, payload) {
-  const { customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart } = payload;
-  const service = await prisma.service.findUnique({ where: { id: serviceId } });
+  const { customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart, sqft, rooms, addOnIds, frequency } = payload;
+  const service = await prisma.service.findUnique({ where: { id: serviceId }, include: { addOns: true } });
   if (!service) {
     const err = new Error('Service not found');
     err.status = 404;
     throw err;
   }
+  const pricing = require('../../lib/pricing');
+  const quote = pricing.calculateQuote(service, { sqft, rooms, addOnIds, frequency, customDurationMinutes: service.estimatedMinutes });
 
   const start = new Date(scheduledStart);
-  const end = new Date(start.getTime() + service.estimatedMinutes * 60 * 1000);
+  const end = new Date(start.getTime() + (quote.breakdown.estimatedMinutes || service.estimatedMinutes) * 60 * 1000);
 
-  const booking = await prisma.booking.create({ data: { businessId, customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart: start, scheduledEnd: end, quotedPriceCents: service.basePriceCents, status: 'REQUESTED' } });
+  const booking = await prisma.booking.create({ data: { businessId, customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart: start, scheduledEnd: end, quotedPriceCents: quote.priceCents, status: 'REQUESTED' } });
 
   await audit({ businessId, actorUserId, action: 'BOOKING_CREATED', entityType: 'Booking', entityId: booking.id });
   await notifications.notifyBookingCreated(businessId, booking);
+  // send confirmation to customer when contact exists
+  try {
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (customer) await notifications.sendCustomerBookingConfirmation(businessId, booking, customer);
+  } catch (e) {
+    // ignore customer notification failures
+  }
   return booking;
 }
 

@@ -34,4 +34,7 @@ router.put(
   controller.updateAvailability
 );
 
+router.post('/:id/clock-in', [body('assignmentId').notEmpty(), body('lat').isFloat(), body('lng').isFloat()], validate, controller.clockIn);
+router.post('/:id/clock-out', [body('assignmentId').notEmpty(), body('lat').isFloat(), body('lng').isFloat()], validate, controller.clockOut);
+
 module.exports = router;

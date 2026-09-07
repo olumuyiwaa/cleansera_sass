@@ -37,4 +37,22 @@ async function updateAvailability(req, res, next) {
   }
 }
 
+async function clockIn(req, res, next) {
+  try {
+    const result = await service.clockIn(req.businessId, req.params.id, req.body.assignmentId, req.user.id, { lat: req.body.lat, lng: req.body.lng });
+    return success(res, 200, result, 'Checked in');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function clockOut(req, res, next) {
+  try {
+    const result = await service.clockOut(req.businessId, req.params.id, req.body.assignmentId, req.user.id, { lat: req.body.lat, lng: req.body.lng });
+    return success(res, 200, result, 'Checked out');
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = { list, onboard, offboard, updateAvailability };

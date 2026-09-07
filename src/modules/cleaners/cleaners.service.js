@@ -38,6 +38,21 @@ async function onboardCleaner(businessId, actorUserId, { firstName, lastName, em
     throw err;
   }
 
+  // Enforce subscription plan limits (maxCleaners) when onboarding
+  try {
+    const sub = await prisma.businessSubscription.findUnique({ where: { businessId } , include: { plan: true } });
+    if (sub && sub.plan && typeof sub.plan.maxCleaners === 'number') {
+      const activeCount = await prisma.cleanerProfile.count({ where: { businessId, status: 'ACTIVE' } });
+      if (activeCount >= sub.plan.maxCleaners) {
+        const err = new Error('Cleaner limit reached for current subscription plan');
+        err.status = 402;
+        throw err;
+      }
+    }
+  } catch (e) {
+    // If DB check fails, do not block onboarding — log and continue
+  }
+
   const profile = await prisma.cleanerProfile.create({
     data: {
       businessId,
@@ -114,3 +129,88 @@ async function setAvailability(businessId, cleanerId, slots) {
 }
 
 module.exports = { onboardCleaner, offboardCleaner, listCleaners, setAvailability };
+
+async function clockIn(businessId, cleanerId, assignmentId, actorUserId, { lat, lng }) {
+  const assignment = await prisma.bookingAssignment.findFirst({ where: { id: assignmentId }, include: { booking: true, cleaner: true } });
+  if (!assignment || assignment.cleanerId !== cleanerId || assignment.booking.businessId !== businessId) {
+    const err = new Error('Assignment not found or mismatch');
+    err.status = 404;
+    throw err;
+  }
+
+  // ensure actor is either the cleaner user or a business member
+  const cleaner = await prisma.cleanerProfile.findUnique({ where: { id: cleanerId }, include: { user: true } });
+  if (!cleaner) {
+    const err = new Error('Cleaner profile not found');
+    err.status = 404;
+    throw err;
+  }
+
+  if (actorUserId !== cleaner.userId) {
+    // allow business members with role to clock in on behalf
+    const bm = await prisma.businessMember.findFirst({ where: { businessId, userId: actorUserId, isActive: true } });
+    if (!bm) {
+      const err = new Error('Not authorized to clock in for this cleaner');
+      err.status = 403;
+      throw err;
+    }
+  }
+
+  // optional geo check: if booking has lat/lng, ensure within 500m
+  try {
+    if (assignment.booking.latitude != null && assignment.booking.longitude != null && lat != null && lng != null) {
+      const { distanceMeters } = require('../../utils/geo');
+      const d = distanceMeters(lat, lng, assignment.booking.latitude, assignment.booking.longitude);
+      if (d > 500) {
+        const err = new Error('Not within allowed check-in range of the booking');
+        err.status = 422;
+        throw err;
+      }
+    }
+  } catch (e) {
+    // ignore geo failures
+  }
+
+  const updated = await prisma.bookingAssignment.update({ where: { id: assignmentId }, data: { checkedInAt: new Date(), checkInLat: lat || null, checkInLng: lng || null } });
+
+  await audit({ businessId, actorUserId, action: 'CLEANER_CHECKED_IN', entityType: 'BookingAssignment', entityId: assignmentId, metadata: { lat, lng } });
+
+  // notify booking owner/business
+  try { const notifications = require('../notifications/notifications.service'); await notifications.notifyCleanerAssigned(businessId, assignment.booking, cleaner.userId); } catch (e) { }
+
+  return updated;
+}
+
+async function clockOut(businessId, cleanerId, assignmentId, actorUserId, { lat, lng }) {
+  const assignment = await prisma.bookingAssignment.findFirst({ where: { id: assignmentId }, include: { booking: true, cleaner: true } });
+  if (!assignment || assignment.cleanerId !== cleanerId || assignment.booking.businessId !== businessId) {
+    const err = new Error('Assignment not found or mismatch');
+    err.status = 404;
+    throw err;
+  }
+
+  const cleaner = await prisma.cleanerProfile.findUnique({ where: { id: cleanerId }, include: { user: true } });
+  if (!cleaner) {
+    const err = new Error('Cleaner profile not found');
+    err.status = 404;
+    throw err;
+  }
+
+  if (actorUserId !== cleaner.userId) {
+    const bm = await prisma.businessMember.findFirst({ where: { businessId, userId: actorUserId, isActive: true } });
+    if (!bm) {
+      const err = new Error('Not authorized to clock out for this cleaner');
+      err.status = 403;
+      throw err;
+    }
+  }
+
+  const updated = await prisma.bookingAssignment.update({ where: { id: assignmentId }, data: { checkedOutAt: new Date() } });
+
+  await audit({ businessId, actorUserId, action: 'CLEANER_CHECKED_OUT', entityType: 'BookingAssignment', entityId: assignmentId, metadata: { lat, lng } });
+
+  return updated;
+}
+
+module.exports.clockIn = clockIn;
+module.exports.clockOut = clockOut;

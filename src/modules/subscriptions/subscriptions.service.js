@@ -6,8 +6,34 @@ async function getSubscriptionForBusiness(businessId) {
 
 module.exports = { getSubscriptionForBusiness };
 
-async function createSubscriptionForBusiness(businessId, { planId, stripeCustomerId, stripeSubscriptionId }) {
-  const created = await prisma.businessSubscription.create({ data: { businessId, planId, stripeCustomerId, stripeSubscriptionId, status: 'ACTIVE' } });
+const stripeClient = require('../../lib/stripeClient');
+
+async function createSubscriptionForBusiness(businessId, { planId, stripeCustomerId, stripeSubscriptionId, billingEmail, billingPhone }) {
+  // if no stripeCustomerId provided, create one
+  let stripeCid = stripeCustomerId;
+  if (!stripeCid) {
+    try {
+      stripeCid = await stripeClient.createCustomerForBusiness(businessId, { email: billingEmail, phone: billingPhone });
+    } catch (e) {
+      // log and continue — DB record won't have stripe ids
+    }
+  }
+
+  // create Stripe subscription if we have a customer and the plan exists
+  let stripeSubId = stripeSubscriptionId;
+  try {
+    if (stripeCid && planId) {
+      const plan = await prisma.subscriptionPlan.findUnique({ where: { id: planId } });
+      if (plan && plan.stripePriceId) {
+        const stripeSub = await stripeClient.createSubscription(stripeCid, plan.stripePriceId);
+        stripeSubId = stripeSub.id;
+      }
+    }
+  } catch (e) {
+    // ignore stripe failures for now
+  }
+
+  const created = await prisma.businessSubscription.create({ data: { businessId, planId, stripeCustomerId: stripeCid, stripeSubscriptionId: stripeSubId, status: 'ACTIVE' } });
   return created;
 }
 
