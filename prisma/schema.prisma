@@ -111,6 +111,8 @@ model Business {
   conversations Conversation[]
   notifications Notification[]
   subscription  BusinessSubscription?
+  pricing       BusinessPricing?
+  coupons       Coupon[]
   auditLogs     AuditLog[]
 
   @@index([subdomain])
@@ -181,23 +183,25 @@ model BusinessPricing {
   frequencyDiscounts Json?    // { WEEKLY: 0.1, BIWEEKLY: 0.05 }
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
-
-  coupons            Coupon[]
 }
 
 model Coupon {
   id          String   @id @default(cuid())
   businessId  String
   business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  code        String   @unique
+  code        String
   type        String   // PERCENT | AMOUNT
   value       Int      // percent (0-100) or cents
   isActive    Boolean  @default(true)
   appliesToServiceId String?
   expiresAt   DateTime?
+  maxRedemptions Int?
+  perCustomerLimit Int?
+  redeemedCount Int? @default(0)
   createdAt   DateTime @default(now())
 
   @@index([businessId])
+  @@unique([businessId, code])
 }
 
 enum BusinessMemberRole {

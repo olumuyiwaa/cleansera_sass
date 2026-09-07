@@ -77,10 +77,18 @@ async function calculateQuote(service, payload = {}) {
     try {
       const coupon = await prisma.coupon.findFirst({ where: { businessId, code: couponCode, isActive: true } });
       if (coupon) {
-        if (coupon.type === 'PERCENT') {
-          total = Math.round(total * (1 - (coupon.value || 0) / 100));
-        } else if (coupon.type === 'AMOUNT') {
-          total = Math.max(0, total - (coupon.value || 0));
+        // expiry check
+        if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) {
+          // expired -> ignore coupon
+        } else if (coupon.appliesToServiceId && coupon.appliesToServiceId !== service.id) {
+          // coupon not applicable to this service -> ignore
+        } else {
+          const t = String(coupon.type || '').toUpperCase();
+          if (t === 'PERCENT') {
+            total = Math.round(total * (1 - (coupon.value || 0) / 100));
+          } else if (t === 'AMOUNT') {
+            total = Math.max(0, total - (coupon.value || 0));
+          }
         }
       }
     } catch (e) {
