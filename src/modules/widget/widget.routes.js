@@ -12,6 +12,7 @@ router.use(widgetLimiter, resolveBusinessFromHost);
 router.get('/storefront', controller.storefront);
 
 router.post('/quote', [body('serviceId').notEmpty()], validate, controller.quote);
+router.get('/slots', controller.slots);
 
 router.post(
   '/bookings',

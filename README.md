@@ -14,6 +14,22 @@ rationale — this README covers what's actually in this scaffold.
 **Scaffolded only** (route file exists, returns an empty stub — build these next, following the `cleaners` module's shape of `*.service.js` / `*.controller.js` / `*.routes.js`):
 `businesses`, `subscriptions`, `customers`, `services`, `bookings`, `dispatch`, `checklists`, `messaging`, `notifications`, `reviews`, `reports`, `storage`
 
+## Current implementation status (updated)
+
+The codebase has progressed beyond initial scaffolding. Recent work implemented or significantly improved the following modules:
+
+- `businesses`: branding, addresses, service areas, and business hours endpoints are available.
+- `services`: full CRUD with add-ons and pricing models (FLAT, PER_SQFT, PER_ROOM, HOURLY) and pricing engine.
+- `bookings`: create, assign, confirm, complete, recurring schedules, and pricing-quoted bookings.
+- `dispatch`: dispatch dashboard, assignment creation and suggestion API with basic auto-assign.
+- `checklists`: checklist templates and per-booking checklists; job photo model exists.
+- `cleaners`: onboarding, offboarding, availability, clock-in/out with geo checks.
+- `notifications`: queued delivery via Bull with retries, socket.io emits, failed-job monitoring endpoint.
+- `subscriptions`: Prisma models and Stripe integration (customer/subscription creation + webhook status updates); plan enforcement on cleaner onboarding.
+- `widget`: storefront, quote (pricing), booking submission, and a time-slot availability endpoint.
+
+Remaining work items include richer pricing rules (business-configurable frequency discounts, coupons), advanced dispatch/routing (ETA via Distance Matrix), end-to-end recurring logic, customer portal features, and comprehensive reporting endpoints.
+
 ## Setup
 
 ```bash

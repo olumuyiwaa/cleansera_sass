@@ -19,6 +19,15 @@ async function quote(req, res, next) {
   }
 }
 
+async function slots(req, res, next) {
+  try {
+    const data = await service.slots(req.businessId, req.query);
+    return success(res, 200, data);
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function submitBooking(req, res, next) {
   try {
     const booking = await service.submitBooking(req.businessId, req.body);
