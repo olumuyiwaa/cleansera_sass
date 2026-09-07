@@ -1,0 +1,98 @@
+const service = require('./bookings.service');
+const { success } = require('../../utils/response');
+
+async function list(req, res, next) {
+  try {
+    const bookings = await service.listBookings(req.businessId, { status: req.query.status });
+    return success(res, 200, bookings);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function create(req, res, next) {
+  try {
+    const booking = await service.createBooking(req.businessId, req.user.id, req.body);
+    return success(res, 201, booking, 'Booking created');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function get(req, res, next) {
+  try {
+    const booking = await service.getBookingById(req.businessId, req.params.id);
+    return success(res, 200, booking);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function update(req, res, next) {
+  try {
+    const booking = await service.updateBooking(req.businessId, req.params.id, req.body);
+    return success(res, 200, booking, 'Booking updated');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function assign(req, res, next) {
+  try {
+    const assignment = await service.assignBooking(req.businessId, req.params.id, req.body.cleanerId, req.user.id);
+    return success(res, 200, assignment, 'Booking assigned');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function confirm(req, res, next) {
+  try {
+    const booking = await service.confirmBooking(req.businessId, req.params.id, req.user.id);
+    return success(res, 200, booking, 'Booking confirmed');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function complete(req, res, next) {
+  try {
+    const booking = await service.completeBooking(req.businessId, req.params.id, req.user.id);
+    return success(res, 200, booking, 'Booking completed');
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { list, create, get, update, assign, confirm, complete };
+
+async function createRecurring(req, res, next) {
+  try {
+    const r = await service.createRecurringSchedule(req.businessId, req.user.id, req.body);
+    return success(res, 201, r, 'Recurring schedule created');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function listRecurring(req, res, next) {
+  try {
+    const r = await service.listRecurringSchedules(req.businessId);
+    return success(res, 200, r);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function cancelRecurring(req, res, next) {
+  try {
+    await service.cancelRecurringSchedule(req.businessId, req.params.id, req.user.id);
+    return success(res, 200, null, 'Recurring schedule canceled');
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports.createRecurring = createRecurring;
+module.exports.listRecurring = listRecurring;
+module.exports.cancelRecurring = cancelRecurring;

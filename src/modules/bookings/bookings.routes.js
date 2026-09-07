@@ -1,0 +1,30 @@
+const express = require('express');
+const { body } = require('express-validator');
+const controller = require('./bookings.controller');
+const { authenticate, requireRole } = require('../../middleware/authenticate');
+const { scopeToBusiness } = require('../../middleware/scopeToBusiness');
+const validate = require('../../middleware/validate');
+
+const router = express.Router();
+
+router.use(authenticate, scopeToBusiness);
+
+router.get('/', controller.list);
+router.post(
+	'/',
+	requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'),
+	[body('customerId').notEmpty(), body('serviceId').notEmpty(), body('scheduledStart').notEmpty()],
+	validate,
+	controller.create
+);
+router.get('/:id', controller.get);
+router.put('/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.update);
+router.post('/:id/assign', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.assign);
+router.post('/:id/confirm', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.confirm);
+router.post('/:id/complete', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.complete);
+
+router.post('/recurring', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), [body('customerId').notEmpty(), body('frequency').notEmpty(), body('dayOfWeek').isInt(), body('startTime').notEmpty()], validate, controller.createRecurring);
+router.get('/recurring', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.listRecurring);
+router.post('/recurring/:id/cancel', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.cancelRecurring);
+
+module.exports = router;

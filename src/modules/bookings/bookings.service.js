@@ -1,0 +1,120 @@
+const prisma = require('../../config/database');
+const { audit } = require('../../utils/audit');
+const notifications = require('../notifications/notifications.service');
+
+async function listBookings(businessId, { status } = {}) {
+  return prisma.booking.findMany({
+    where: { businessId, ...(status ? { status } : {}) },
+    include: { customer: true, service: true, assignments: { include: { cleaner: { include: { user: true } } } } },
+    orderBy: { scheduledStart: 'desc' },
+    take: 200,
+  });
+}
+
+async function getBookingById(businessId, id) {
+  const b = await prisma.booking.findFirst({ where: { id, businessId }, include: { customer: true, service: true, assignments: true } });
+  if (!b) {
+    const err = new Error('Booking not found');
+    err.status = 404;
+    throw err;
+  }
+  return b;
+}
+
+async function createBooking(businessId, actorUserId, payload) {
+  const { customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart } = payload;
+  const service = await prisma.service.findUnique({ where: { id: serviceId } });
+  if (!service) {
+    const err = new Error('Service not found');
+    err.status = 404;
+    throw err;
+  }
+
+  const start = new Date(scheduledStart);
+  const end = new Date(start.getTime() + service.estimatedMinutes * 60 * 1000);
+
+  const booking = await prisma.booking.create({ data: { businessId, customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart: start, scheduledEnd: end, quotedPriceCents: service.basePriceCents, status: 'REQUESTED' } });
+
+  await audit({ businessId, actorUserId, action: 'BOOKING_CREATED', entityType: 'Booking', entityId: booking.id });
+  await notifications.notifyBookingCreated(businessId, booking);
+  return booking;
+}
+
+async function updateBooking(businessId, id, patch) {
+  const booking = await getBookingById(businessId, id);
+  const updated = await prisma.booking.update({ where: { id }, data: patch });
+  await audit({ businessId, action: 'BOOKING_UPDATED', entityType: 'Booking', entityId: id, metadata: patch });
+  return updated;
+}
+
+async function assignBooking(businessId, bookingId, cleanerId, actorUserId) {
+  const booking = await getBookingById(businessId, bookingId);
+  const cleaner = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId, status: 'ACTIVE' } });
+  if (!cleaner) {
+    const err = new Error('Cleaner not available');
+    err.status = 400;
+    throw err;
+  }
+
+  // Prevent overlapping assignments for the cleaner
+  const overlap = await prisma.bookingAssignment.findFirst({ where: { cleanerId, booking: { scheduledStart: { lte: booking.scheduledEnd }, scheduledEnd: { gte: booking.scheduledStart } } }, include: { booking: true } });
+  if (overlap) {
+    const err = new Error('Cleaner has another booking during this time');
+    err.status = 400;
+    throw err;
+  }
+
+  const assignment = await prisma.bookingAssignment.create({ data: { bookingId, cleanerId } });
+  await prisma.booking.update({ where: { id: bookingId }, data: { status: 'ASSIGNED' } });
+  await audit({ businessId, actorUserId, action: 'BOOKING_ASSIGNED', entityType: 'BookingAssignment', entityId: assignment.id, metadata: { cleanerId } });
+  // notify assigned cleaner via notifications
+  const assignedCleaner = await prisma.cleanerProfile.findUnique({ where: { id: cleanerId }, include: { user: true } });
+  if (assignedCleaner) {
+    await notifications.notifyCleanerAssigned(businessId, booking, assignedCleaner.userId);
+  }
+  return assignment;
+}
+
+async function confirmBooking(businessId, bookingId, actorUserId) {
+  await getBookingById(businessId, bookingId);
+  const updated = await prisma.booking.update({ where: { id: bookingId }, data: { status: 'CONFIRMED' } });
+  await audit({ businessId, actorUserId, action: 'BOOKING_CONFIRMED', entityType: 'Booking', entityId: bookingId });
+  return updated;
+}
+
+async function completeBooking(businessId, bookingId, actorUserId) {
+  await getBookingById(businessId, bookingId);
+  const updated = await prisma.booking.update({ where: { id: bookingId }, data: { status: 'COMPLETED' } });
+  await audit({ businessId, actorUserId, action: 'BOOKING_COMPLETED', entityType: 'Booking', entityId: bookingId });
+  return updated;
+}
+
+module.exports = { listBookings, getBookingById, createBooking, updateBooking, assignBooking, confirmBooking, completeBooking };
+
+async function createRecurringSchedule(businessId, actorUserId, payload) {
+  const { customerId, frequency, dayOfWeek, startTime } = payload;
+  const nextRunDate = new Date();
+  // user supplies dayOfWeek and startTime; computing nextRunDate is left simple here
+  const created = await prisma.recurringSchedule.create({ data: { businessId, customerId, frequency, dayOfWeek, startTime, nextRunDate } });
+  await audit({ businessId, actorUserId, action: 'RECURRING_CREATED', entityType: 'RecurringSchedule', entityId: created.id });
+  return created;
+}
+
+async function listRecurringSchedules(businessId) {
+  return prisma.recurringSchedule.findMany({ where: { businessId }, orderBy: { createdAt: 'desc' } });
+}
+
+async function cancelRecurringSchedule(businessId, id, actorUserId) {
+  const rs = await prisma.recurringSchedule.findFirst({ where: { id, businessId } });
+  if (!rs) {
+    const err = new Error('Recurring schedule not found');
+    err.status = 404;
+    throw err;
+  }
+  await prisma.recurringSchedule.update({ where: { id }, data: { isActive: false } });
+  await audit({ businessId, actorUserId, action: 'RECURRING_CANCELLED', entityType: 'RecurringSchedule', entityId: id });
+}
+
+module.exports.createRecurringSchedule = createRecurringSchedule;
+module.exports.listRecurringSchedules = listRecurringSchedules;
+module.exports.cancelRecurringSchedule = cancelRecurringSchedule;
