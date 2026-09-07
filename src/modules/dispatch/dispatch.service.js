@@ -66,26 +66,29 @@ async function suggestCleaners(businessId, bookingId, limit = 5) {
   const scheduler = require('../../lib/scheduler');
   const { distanceMeters } = require('../../utils/geo');
 
-  const candidates = await scheduler.findAvailableCleaners(businessId, booking.scheduledStart, booking.scheduledEnd, { lat: booking.latitude, lng: booking.longitude });
+  // request ETA enrichment from scheduler when possible
+  const candidates = await scheduler.findAvailableCleaners(businessId, booking.scheduledStart, booking.scheduledEnd, { lat: booking.latitude, lng: booking.longitude, includeEta: true });
 
-  // compute distance to booking location when available
   const enriched = await Promise.all(candidates.map(async (c) => {
-    // try to get last known booking location
-    const lastAssignment = await prisma.bookingAssignment.findFirst({ where: { cleanerId: c.id }, orderBy: { assignedAt: 'desc' }, include: { booking: true } });
-    let dist = null;
-    if (booking.latitude != null && booking.longitude != null) {
+    // c may be either a cleaner object or enriched { cleaner, distanceMeters, etaSeconds }
+    let cleaner = c.cleaner || c;
+    let distanceMetersVal = c.distanceMeters || null;
+    let etaMinutes = c.etaSeconds ? Math.round(c.etaSeconds / 60) : null;
+
+    // fallback: if scheduler didn't compute distance, compute lightweight heuristic
+    if (distanceMetersVal == null && booking.latitude != null && booking.longitude != null) {
+      const lastAssignment = await prisma.bookingAssignment.findFirst({ where: { cleanerId: cleaner.id }, orderBy: { assignedAt: 'desc' }, include: { booking: true } });
       if (lastAssignment && lastAssignment.booking && lastAssignment.booking.latitude != null && lastAssignment.booking.longitude != null) {
-        dist = distanceMeters(lastAssignment.booking.latitude, lastAssignment.booking.longitude, booking.latitude, booking.longitude);
-      } else if (c.user && c.user.latitude && c.user.longitude) {
-        dist = distanceMeters(c.user.latitude, c.user.longitude, booking.latitude, booking.longitude);
-      } else {
-        dist = 0; // unknown, treat as zero to include
+        distanceMetersVal = distanceMeters(lastAssignment.booking.latitude, lastAssignment.booking.longitude, booking.latitude, booking.longitude);
+      } else if (cleaner.user && cleaner.user.latitude && cleaner.user.longitude) {
+        distanceMetersVal = distanceMeters(cleaner.user.latitude, cleaner.user.longitude, booking.latitude, booking.longitude);
       }
     }
-    return { id: c.id, user: c.user, availability: c.availability, distanceMeters: dist };
+
+    return { id: cleaner.id, user: cleaner.user, availability: cleaner.availability, distanceMeters: distanceMetersVal, etaMinutes };
   }));
 
-  enriched.sort((a, b) => (a.distanceMeters || 0) - (b.distanceMeters || 0));
+  enriched.sort((a, b) => (a.etaMinutes != null && b.etaMinutes != null) ? a.etaMinutes - b.etaMinutes : (a.distanceMeters || 0) - (b.distanceMeters || 0));
   return enriched.slice(0, limit);
 }
 

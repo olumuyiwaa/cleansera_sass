@@ -94,4 +94,18 @@ async function updateHours(businessId, hours) {
   return listHours(businessId);
 }
 
-module.exports = { listBusinesses, updateBusiness };
+module.exports = {
+  listBusinesses,
+  updateBusiness,
+  getBranding,
+  updateBranding,
+  addAddress,
+  updateAddress,
+  removeAddress,
+  listServiceAreas,
+  createServiceArea,
+  updateServiceArea,
+  deleteServiceArea,
+  listHours,
+  updateHours,
+};

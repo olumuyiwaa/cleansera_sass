@@ -19,6 +19,8 @@
     "studio": "prisma studio",
     "send-reminders": "node src/workers/sendReminders.js",
     "reminder-daemon": "node src/workers/reminderDaemon.js"
+    ,
+    "precompute-slots": "node src/workers/slotPrecompute.js"
   },
   "license": "UNLICENSED",
   "private": true,

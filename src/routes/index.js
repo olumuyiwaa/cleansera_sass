@@ -7,6 +7,7 @@ router.use('/auth', require('../modules/auth/auth.routes'));
 
 // Business dashboard (authenticated, tenant-scoped)
 router.use('/businesses', require('../modules/businesses/businesses.routes'));
+router.use('/businesses/pricing', require('../modules/pricing/pricing.routes'));
 router.use('/subscriptions', require('../modules/subscriptions/subscriptions.routes'));
 router.use('/cleaners', require('../modules/cleaners/cleaners.routes'));
 router.use('/customers', require('../modules/customers/customers.routes'));

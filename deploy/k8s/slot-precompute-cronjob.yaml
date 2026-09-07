@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: slot-precompute
+  labels:
+    app: cleansera
+spec:
+  schedule: "0 2 * * *" # daily at 02:00
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: slot-precompute
+              image: your-registry/cleansera-api:latest # replace with your image
+              imagePullPolicy: IfNotPresent
+              command: ["node", "./src/workers/slotPrecompute.js"]
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: cleansera-secrets
+                      key: DATABASE_URL
+                - name: REDIS_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: cleansera-secrets
+                      key: REDIS_URL
+                - name: NODE_ENV
+                  value: production
+          serviceAccountName: cleansera-worker
+          # set resource requests/limits according to your environment
+          # resources:
+          #  requests:
+          #    cpu: "100m"
+          #    memory: "128Mi"
+          #  limits:
+          #    cpu: "500m"
+          #    memory: "256Mi"

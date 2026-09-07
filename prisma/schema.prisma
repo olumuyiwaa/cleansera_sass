@@ -173,6 +173,33 @@ model BusinessHours {
   @@unique([businessId, dayOfWeek])
 }
 
+// Business pricing settings: frequency discounts and coupons
+model BusinessPricing {
+  id                 String   @id @default(cuid())
+  businessId         String   @unique
+  business           Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  frequencyDiscounts Json?    // { WEEKLY: 0.1, BIWEEKLY: 0.05 }
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  coupons            Coupon[]
+}
+
+model Coupon {
+  id          String   @id @default(cuid())
+  businessId  String
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  code        String   @unique
+  type        String   // PERCENT | AMOUNT
+  value       Int      // percent (0-100) or cents
+  isActive    Boolean  @default(true)
+  appliesToServiceId String?
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([businessId])
+}
+
 enum BusinessMemberRole {
   BUSINESS_OWNER
   BUSINESS_MANAGER

@@ -30,7 +30,7 @@ async function createBooking(businessId, actorUserId, payload) {
     throw err;
   }
   const pricing = require('../../lib/pricing');
-  const quote = pricing.calculateQuote(service, { sqft, rooms, addOnIds, frequency, customDurationMinutes: service.estimatedMinutes });
+  const quote = await pricing.calculateQuote(service, { businessId, sqft, rooms, addOnIds, frequency, customDurationMinutes: service.estimatedMinutes });
 
   const start = new Date(scheduledStart);
   const end = new Date(start.getTime() + (quote.breakdown.estimatedMinutes || service.estimatedMinutes) * 60 * 1000);

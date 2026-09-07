@@ -6,13 +6,18 @@ rationale — this README covers what's actually in this scaffold.
 
 ## Status
 
-**Fully implemented** (reference pattern to copy for the rest):
-- `auth` — business registration (creates tenant + owner in one transaction), login, refresh-token rotation, logout
-- `cleaners` — onboarding, offboarding, availability, listing
-- `widget` — public booking engine: storefront, quote, booking submission, all resolved from the request's Host header via `resolveBusinessFromHost`
+The repository has moved past initial scaffolding; many modules are implemented and usable. Key implemented modules include:
 
-**Scaffolded only** (route file exists, returns an empty stub — build these next, following the `cleaners` module's shape of `*.service.js` / `*.controller.js` / `*.routes.js`):
-`businesses`, `subscriptions`, `customers`, `services`, `bookings`, `dispatch`, `checklists`, `messaging`, `notifications`, `reviews`, `reports`, `storage`
+- `auth` — business registration, login, refresh-token rotation, logout
+- `cleaners` — onboarding, offboarding, availability, listing, clock-in/out
+- `widget` — public booking engine: storefront, quote (with optional scheduledStart availability check), booking submission, and time-slot availability endpoint
+- `businesses` — branding, addresses, service areas, and business hours management
+- `services` — service catalog, add-ons, and pricing engine
+- `bookings` — booking creation, quoted pricing, and basic assignment flows
+- `dispatch` — suggestion API and basic auto-assign
+- `checklists` — templates and per-booking checklist models
+- `notifications` — queued delivery via Bull with socket.io emits
+- `subscriptions` — Stripe integration for customer/subscription creation and webhook-based status updates
 
 ## Current implementation status (updated)
 
@@ -59,9 +64,11 @@ npm run dev
 
 ## Next steps
 
-1. Build out the stubbed modules, starting with `businesses` (branding/domain
-   management) and `services` (catalog) — `bookings` and `dispatch` depend on
-   both existing first.
+1. Harden pricing and billing: business-configurable frequency discounts, coupons, and Stripe customer portal/proration flows.
+2. Improve dispatch: integrate travel-time (Distance Matrix) for ETA-based ranking and workload balancing.
+3. Strengthen recurring engine: idempotency, cancellations, and retry semantics.
+4. Customer portal: reschedule, cancel, history, and reviews.
+5. Reporting & analytics: revenue, utilization, and no-show metrics.
 2. Wire `subscriptions` to Stripe Billing (CleanSera ↔ Business only — no
    job-level payment processing, per the architecture plan).
 3. Add the Flutter cleaner app and Next.js business dashboard as separate
@@ -85,4 +92,51 @@ npm run seed
 ```
 
 This creates an example business if none exists and adds sample `ChecklistTemplate` rows.
+
+## Deployment (quick start)
+
+This section describes minimal environment variables and examples for running scheduled workers that precompute widget slots.
+
+- Environment variables (required for the API and workers):
+  - `DATABASE_URL` — Postgres connection string used by Prisma.
+  - `REDIS_URL` — Redis connection used for queues and slot caching (optional but recommended).
+  - `JWT_SECRET` — secret for signing access tokens.
+  - `GOOGLE_DISTANCE_MATRIX_API_KEY` — optional; used to compute ETA/distance for dispatch ranking.
+
+- Database migration (run once after pulling schema changes):
+```bash
+npx prisma generate
+npx prisma migrate dev --name init
+```
+
+- Run slot precompute worker manually (one-off):
+```bash
+npm run precompute-slots
+```
+
+- Kubernetes CronJob (example)
+  - See `deploy/k8s/slot-precompute-cronjob.yaml` and `deploy/k8s/slot-precompute-secret-sa.yaml` for an example Secret, ServiceAccount and RBAC.
+  - Apply via:
+```bash
+kubectl apply -f deploy/k8s/slot-precompute-secret-sa.yaml
+kubectl apply -f deploy/k8s/slot-precompute-cronjob.yaml
+```
+  - Replace the image `your-registry/cleansera-api:latest` in the CronJob with your built image and ensure the `cleansera-secrets` secret contains `DATABASE_URL` and `REDIS_URL`.
+
+- systemd (on-prem) example
+  - Example unit and timer are in `deploy/systemd/slot-precompute.service` and `deploy/systemd/slot-precompute.timer`.
+  - Example environment file: `deploy/systemd/cleansera.env.example` — copy to `/etc/default/cleansera` and edit values.
+  - Install and enable the timer:
+```bash
+sudo cp deploy/systemd/slot-precompute.service /etc/systemd/system/
+sudo cp deploy/systemd/slot-precompute.timer /etc/systemd/system/
+sudo cp deploy/systemd/cleansera.env.example /etc/default/cleansera
+sudo systemctl daemon-reload
+sudo systemctl enable --now slot-precompute.timer
+```
+
+Notes
+- The CronJob and systemd examples are minimal; adapt resource requests, security context, imagePullSecrets, and Namespace to your environment.
+- In Kubernetes, prefer creating Secrets with `kubectl create secret generic cleansera-secrets --from-literal=DATABASE_URL='...' --from-literal=REDIS_URL='...'` rather than embedding secrets in YAML.
+
 

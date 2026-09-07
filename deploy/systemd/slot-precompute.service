@@ -1,0 +1,16 @@
+[Unit]
+Description=CleanSera Slot Precompute
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/cleansera-api
+# read environment from /etc/default/cleansera (example provided under deploy/systemd)
+EnvironmentFile=/etc/default/cleansera
+ExecStart=/usr/bin/node ./src/workers/slotPrecompute.js
+User=cleansera
+Group=cleansera
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

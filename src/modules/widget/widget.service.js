@@ -13,7 +13,7 @@ async function getStorefront(businessId) {
   return { business, services };
 }
 
-async function quote(businessId, { serviceId, addOnIds = [], latitude, longitude }) {
+async function quote(businessId, { serviceId, addOnIds = [], latitude, longitude, scheduledStart } = {}) {
   const service = await prisma.service.findFirst({ where: { id: serviceId, businessId, isActive: true }, include: { addOns: true } });
   if (!service) {
     const err = new Error('Service not found');
@@ -31,9 +31,21 @@ async function quote(businessId, { serviceId, addOnIds = [], latitude, longitude
   }
 
   const pricing = require('../../lib/pricing');
-  const quote = pricing.calculateQuote(service, { addOnIds });
+  const quote = await pricing.calculateQuote(service, { businessId, addOnIds, scheduledStart });
 
-  // availability check: if lat/lng and a scheduledStart provided in options, skip here (handled in submit)
+  // optional availability check: if a scheduledStart is provided, validate at-quote time
+  if (scheduledStart) {
+    const start = new Date(scheduledStart);
+    const end = new Date(start.getTime() + (quote.breakdown.estimatedMinutes || 60) * 60 * 1000);
+    const scheduler = require('../../lib/scheduler');
+    const candidates = await scheduler.findAvailableCleaners(businessId, start, end, { lat: latitude, lng: longitude });
+    if (!candidates || candidates.length === 0) {
+      const err = new Error('No cleaners available for the requested scheduledStart');
+      err.status = 422;
+      throw err;
+    }
+  }
+
   return { serviceId, addOnIds, priceCents: quote.priceCents, estimatedMinutes: quote.breakdown.estimatedMinutes, breakdown: quote.breakdown };
 }
 
@@ -127,6 +139,14 @@ async function slots(businessId, query) {
   const slotLen = parseInt(slotMinutes, 10) || svc.estimatedMinutes || 60;
   const slots = [];
   const scheduler = require('../../lib/scheduler');
+  // simple per-request cache to avoid repeated scheduler queries for identical slot windows
+  const _availCache = new Map();
+  const cache = require('../../lib/cache');
+
+  // try Redis cache for the whole day/service if available
+  const redisKey = `slots:${businessId}:${serviceId}:${day.toISOString().slice(0,10)}:${slotLen}`;
+  const cached = await cache.get(redisKey);
+  if (cached) return { date: day.toISOString().slice(0, 10), slots: cached };
 
   for (const h of businessHours) {
     const startParts = h.openTime.split(':').map(Number);
@@ -137,7 +157,12 @@ async function slots(businessId, query) {
     for (let t = new Date(startDt); t.getTime() + slotLen * 60000 <= endDt.getTime(); t.setMinutes(t.getMinutes() + 30)) {
       const slotStart = new Date(t);
       const slotEnd = new Date(t.getTime() + slotLen * 60000);
-      const candidates = await scheduler.findAvailableCleaners(businessId, slotStart, slotEnd, {});
+      const cacheKey = slotStart.toISOString() + '|' + slotEnd.toISOString();
+      let candidates = _availCache.get(cacheKey);
+      if (typeof candidates === 'undefined') {
+        candidates = await scheduler.findAvailableCleaners(businessId, slotStart, slotEnd, {});
+        _availCache.set(cacheKey, candidates || []);
+      }
       if (candidates && candidates.length > 0) {
         slots.push({ start: slotStart.toISOString(), end: slotEnd.toISOString(), available: candidates.length });
       }
@@ -145,6 +170,9 @@ async function slots(businessId, query) {
     }
     if (slots.length >= limit) break;
   }
+
+  // store in Redis short-term cache
+  try { await cache.set(redisKey, slots, 30); } catch (e) { }
 
   return { date: day.toISOString().slice(0, 10), slots };
 }

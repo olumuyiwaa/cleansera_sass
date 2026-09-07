@@ -27,7 +27,7 @@ function slotCovers(slot, startDate, endDate) {
  * - checks cleaner availability slots
  * - optionally filters by proximity (within maxDistanceMeters)
  */
-async function findAvailableCleaners(businessId, startDate, endDate, { maxDistanceMeters = 30000, travelBufferMinutes = 30, lat, lng } = {}) {
+async function findAvailableCleaners(businessId, startDate, endDate, { maxDistanceMeters = 30000, travelBufferMinutes = 30, lat, lng, includeEta = false } = {}) {
   // fetch active cleaners with availability
   const cleaners = await prisma.cleanerProfile.findMany({ where: { businessId, status: 'ACTIVE' }, include: { availability: true, user: true } });
 
@@ -45,6 +45,7 @@ async function findAvailableCleaners(businessId, startDate, endDate, { maxDistan
     if (overlapping) continue;
 
     // distance check if lat/lng provided and cleaner has recent assignment or base location
+    let distanceInfo = null;
     if (lat != null && lng != null) {
       // if cleaner has serviceAreaIds, skip distance heuristic; otherwise allow
       // For now, just compute distance from cleaner's last assignment end or business center if available
@@ -54,10 +55,31 @@ async function findAvailableCleaners(businessId, startDate, endDate, { maxDistan
       if (lastAssignment && lastAssignment.booking && lastAssignment.booking.latitude != null && lastAssignment.booking.longitude != null) {
         const d = distanceMeters(lastAssignment.booking.latitude, lastAssignment.booking.longitude, lat, lng);
         if (d > maxDistanceMeters) continue;
+        distanceInfo = { distanceMeters: d };
+      }
+    }
+    if (includeEta && distanceInfo == null && lat != null && lng != null) {
+      // try to compute ETA via Google Distance Matrix if available
+      try {
+        const distanceClient = require('./distance');
+        // assume cleaner's last known location from last assignment
+        const lastAssignment = await prisma.bookingAssignment.findFirst({ where: { cleanerId: c.id }, orderBy: { assignedAt: 'desc' }, include: { booking: true } });
+        if (lastAssignment && lastAssignment.booking && lastAssignment.booking.latitude != null && lastAssignment.booking.longitude != null) {
+          const dd = await distanceClient.distanceAndDuration({ lat: lastAssignment.booking.latitude, lng: lastAssignment.booking.longitude }, { lat, lng });
+          if (dd) distanceInfo = { distanceMeters: dd.distanceMeters, durationSeconds: dd.durationSeconds };
+        }
+      } catch (e) {
+        // ignore
       }
     }
 
-    candidates.push(c);
+    if (includeEta && distanceInfo) {
+      candidates.push({ cleaner: c, distanceMeters: distanceInfo.distanceMeters || 0, etaSeconds: distanceInfo.durationSeconds || null });
+    } else if (includeEta) {
+      candidates.push({ cleaner: c, distanceMeters: null, etaSeconds: null });
+    } else {
+      candidates.push(c);
+    }
   }
 
   return candidates;
