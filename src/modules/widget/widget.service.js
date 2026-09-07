@@ -13,7 +13,7 @@ async function getStorefront(businessId) {
   return { business, services };
 }
 
-async function quote(businessId, { serviceId, addOnIds = [], latitude, longitude, scheduledStart } = {}) {
+async function quote(businessId, { serviceId, addOnIds = [], latitude, longitude, scheduledStart, couponCode } = {}) {
   const service = await prisma.service.findFirst({ where: { id: serviceId, businessId, isActive: true }, include: { addOns: true } });
   if (!service) {
     const err = new Error('Service not found');
@@ -31,7 +31,7 @@ async function quote(businessId, { serviceId, addOnIds = [], latitude, longitude
   }
 
   const pricing = require('../../lib/pricing');
-  const quote = await pricing.calculateQuote(service, { businessId, addOnIds, scheduledStart });
+  const quote = await pricing.calculateQuote(service, { businessId, addOnIds, scheduledStart, couponCode });
 
   // optional availability check: if a scheduledStart is provided, validate at-quote time
   if (scheduledStart) {
@@ -46,7 +46,7 @@ async function quote(businessId, { serviceId, addOnIds = [], latitude, longitude
     }
   }
 
-  return { serviceId, addOnIds, priceCents: quote.priceCents, estimatedMinutes: quote.breakdown.estimatedMinutes, breakdown: quote.breakdown };
+  return { serviceId, addOnIds, priceCents: quote.priceCents, estimatedMinutes: quote.breakdown.estimatedMinutes, breakdown: quote.breakdown, coupon: quote.coupon };
 }
 
 /**

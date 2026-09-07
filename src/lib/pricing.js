@@ -46,6 +46,7 @@ function applyFrequencyDiscount(priceCents, frequency) {
 
 async function calculateQuote(service, payload = {}) {
   const { businessId, addOnIds = [], frequency, couponCode } = payload;
+  let couponInfo;
   const { base, estimatedMinutes: baseMinutes } = calculateBase(service, payload);
   const { addOnTotal, extraMinutes } = sumAddOnData(service, addOnIds);
 

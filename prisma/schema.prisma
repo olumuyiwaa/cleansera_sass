@@ -198,6 +198,7 @@ model Coupon {
   maxRedemptions Int?
   perCustomerLimit Int?
   redeemedCount Int? @default(0)
+  bookings     Booking[]
   createdAt   DateTime @default(now())
 
   @@index([businessId])
