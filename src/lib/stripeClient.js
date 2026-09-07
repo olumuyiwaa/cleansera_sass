@@ -22,6 +22,10 @@ async function createSubscription(stripeCustomerId, priceId) {
   return sub;
 }
 
+async function cancelSubscription(stripeSubscriptionId) {
+  return stripe.subscriptions.cancel(stripeSubscriptionId);
+}
+
 async function retrieveEvent(rawBody, sig) {
   if (!process.env.STRIPE_WEBHOOK_SECRET) return null;
   try {
@@ -32,4 +36,4 @@ async function retrieveEvent(rawBody, sig) {
   }
 }
 
-module.exports = { createCustomerForBusiness, createSubscription, retrieveEvent, stripe };
+module.exports = { createCustomerForBusiness, createSubscription, cancelSubscription, retrieveEvent, stripe };

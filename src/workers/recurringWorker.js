@@ -1,47 +1,64 @@
 const prisma = require('../config/database');
 const logger = require('../config/logger');
 const notifications = require('../modules/notifications/notifications.service');
-
-function addDays(date, days) {
-  const d = new Date(date);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d;
-}
-
-function addMonths(date, months) {
-  const d = new Date(date);
-  d.setUTCMonth(d.getUTCMonth() + months);
-  return d;
-}
+const { advanceRunDate } = require('../utils/timezone');
 
 async function processOnce() {
   const now = new Date();
-  const schedules = await prisma.recurringSchedule.findMany({ where: { isActive: true, nextRunDate: { lte: now } } });
+  const schedules = await prisma.recurringSchedule.findMany({
+    where: { isActive: true, nextRunDate: { lte: now } },
+    include: { customer: { include: { addresses: true } }, service: true, customerAddress: true, business: true },
+  });
+
   for (const s of schedules) {
     try {
-      // create booking based on recurring schedule
-      const customer = await prisma.customer.findUnique({ where: { id: s.customerId }, include: { addresses: true } });
-      if (!customer) continue;
-      // choose a default service if none specified (not modeled on schedule) — pick first business service
-      const service = await prisma.service.findFirst({ where: { businessId: s.businessId } });
-      if (!service) continue;
+      if (!s.customer || !s.service) {
+        logger.error('Recurring schedule missing customer or service, skipping', { scheduleId: s.id });
+        continue;
+      }
 
       const start = new Date(s.nextRunDate);
-      const end = new Date(start.getTime() + service.estimatedMinutes * 60 * 1000);
-      const address = customer.addresses.find((a) => a.isPrimary) || customer.addresses[0];
+      const end = new Date(start.getTime() + s.service.estimatedMinutes * 60 * 1000);
+      const address = s.customerAddress || s.customer.addresses.find((a) => a.isPrimary) || s.customer.addresses[0];
 
-      const booking = await prisma.booking.create({ data: { businessId: s.businessId, customerId: s.customerId, serviceId: service.id, addressLine1: address?.line1 || '', city: address?.city || '', state: address?.state || '', latitude: address?.latitude, longitude: address?.longitude, scheduledStart: start, scheduledEnd: end, quotedPriceCents: service.basePriceCents, status: 'REQUESTED' } });
+      let booking;
+      try {
+        booking = await prisma.booking.create({
+          data: {
+            businessId: s.businessId,
+            customerId: s.customerId,
+            serviceId: s.serviceId,
+            recurringScheduleId: s.id,
+            addressLine1: address?.line1 || '',
+            addressLine2: address?.line2,
+            city: address?.city || '',
+            state: address?.state || '',
+            latitude: address?.latitude,
+            longitude: address?.longitude,
+            scheduledStart: start,
+            scheduledEnd: end,
+            quotedPriceCents: s.service.basePriceCents,
+            status: 'REQUESTED',
+          },
+        });
+      } catch (e) {
+        if (e.code === 'P2002') {
+          // A booking for this schedule + start already exists — another
+          // daemon tick/replica beat us to it. Not an error, just skip.
+          logger.info('Recurring booking already exists for this slot, skipping', { scheduleId: s.id, start });
+        } else {
+          throw e;
+        }
+      }
 
-      await notifications.notifyBookingCreated(s.businessId, booking);
+      if (booking) {
+        await notifications.notifyBookingCreated(s.businessId, booking);
+        logger.info('Created recurring booking', { scheduleId: s.id, bookingId: booking.id });
+      }
 
-      // advance nextRunDate
-      let next = s.nextRunDate;
-      if (s.frequency === 'WEEKLY') next = addDays(next, 7);
-      else if (s.frequency === 'BIWEEKLY') next = addDays(next, 14);
-      else if (s.frequency === 'MONTHLY') next = addMonths(next, 1);
-
+      const timezone = s.business?.timezone || 'UTC';
+      const next = advanceRunDate(s.nextRunDate, s.frequency, s.startTime, timezone);
       await prisma.recurringSchedule.update({ where: { id: s.id }, data: { nextRunDate: next } });
-      logger.info('Created recurring booking', { scheduleId: s.id, bookingId: booking.id });
     } catch (e) {
       logger.error('Failed to process recurring schedule', e);
     }

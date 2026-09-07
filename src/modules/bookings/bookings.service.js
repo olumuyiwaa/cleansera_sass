@@ -149,28 +149,38 @@ async function completeBooking(businessId, bookingId, actorUserId) {
 
 module.exports = { listBookings, getBookingById, createBooking, updateBooking, assignBooking, confirmBooking, completeBooking };
 
-/**
- * Computes the first future occurrence of the given dayOfWeek/startTime
- * (0 = Sunday .. 6 = Saturday, startTime as "HH:MM"), so a new schedule's
- * first run actually lands on the requested day/time instead of firing on
- * the next cron tick after creation.
- */
-function computeInitialRunDate(dayOfWeek, startTime) {
-  const [hh, mm] = (startTime || '09:00').split(':').map(Number);
-  const now = new Date();
-  const next = new Date(now);
-  next.setHours(hh, mm || 0, 0, 0);
-
-  let daysUntilTarget = (dayOfWeek - next.getDay() + 7) % 7;
-  if (daysUntilTarget === 0 && next <= now) daysUntilTarget = 7; // today's slot already passed
-  next.setDate(next.getDate() + daysUntilTarget);
-  return next;
-}
+const { computeInitialRunDate } = require('../../utils/timezone');
 
 async function createRecurringSchedule(businessId, actorUserId, payload) {
-  const { customerId, frequency, dayOfWeek, startTime } = payload;
-  const nextRunDate = computeInitialRunDate(dayOfWeek, startTime);
-  const created = await prisma.recurringSchedule.create({ data: { businessId, customerId, frequency, dayOfWeek, startTime, nextRunDate } });
+  const { customerId, serviceId, customerAddressId, frequency, dayOfWeek, startTime } = payload;
+
+  const customer = await prisma.customer.findFirst({ where: { id: customerId, businessId } });
+  if (!customer) {
+    const err = new Error('Customer not found for this business');
+    err.status = 404;
+    throw err;
+  }
+  const service = await prisma.service.findFirst({ where: { id: serviceId, businessId } });
+  if (!service) {
+    const err = new Error('Service not found for this business');
+    err.status = 404;
+    throw err;
+  }
+  if (customerAddressId) {
+    const address = await prisma.customerAddress.findFirst({ where: { id: customerAddressId, customerId } });
+    if (!address) {
+      const err = new Error('Address does not belong to this customer');
+      err.status = 422;
+      throw err;
+    }
+  }
+
+  const business = await prisma.business.findUnique({ where: { id: businessId } });
+  const nextRunDate = computeInitialRunDate(dayOfWeek, startTime, business.timezone);
+
+  const created = await prisma.recurringSchedule.create({
+    data: { businessId, customerId, serviceId, customerAddressId, frequency, dayOfWeek, startTime, nextRunDate },
+  });
   await audit({ businessId, actorUserId, action: 'RECURRING_CREATED', entityType: 'RecurringSchedule', entityId: created.id });
   return created;
 }

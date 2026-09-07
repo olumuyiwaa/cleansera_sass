@@ -23,7 +23,7 @@ router.post('/:id/assign', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), co
 router.post('/:id/confirm', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.confirm);
 router.post('/:id/complete', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.complete);
 
-router.post('/recurring', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), [body('customerId').notEmpty(), body('frequency').notEmpty(), body('dayOfWeek').isInt(), body('startTime').notEmpty()], validate, controller.createRecurring);
+router.post('/recurring', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), [body('customerId').notEmpty(), body('serviceId').notEmpty(), body('customerAddressId').optional(), body('frequency').notEmpty(), body('dayOfWeek').isInt(), body('startTime').notEmpty()], validate, controller.createRecurring);
 router.get('/recurring', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.listRecurring);
 router.post('/recurring/:id/cancel', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.cancelRecurring);
 

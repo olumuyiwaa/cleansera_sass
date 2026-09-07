@@ -355,6 +355,8 @@ model CustomerAddress {
   longitude  Float?
   isPrimary  Boolean  @default(false)
 
+  recurringSchedules RecurringSchedule[]
+
   @@index([customerId])
 }
 
@@ -383,6 +385,7 @@ model Service {
 
   addOns   ServiceAddOn[]
   bookings Booking[]
+  recurringSchedules RecurringSchedule[]
 
   @@index([businessId])
 }
@@ -423,6 +426,10 @@ model RecurringSchedule {
   business    Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
   customerId  String
   customer    Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  serviceId   String
+  service     Service             @relation(fields: [serviceId], references: [id])
+  customerAddressId String?
+  customerAddress   CustomerAddress? @relation(fields: [customerAddressId], references: [id])
   frequency   RecurrenceFrequency
   dayOfWeek   Int
   startTime   String
@@ -472,6 +479,12 @@ model Booking {
   @@index([businessId])
   @@index([businessId, status])
   @@index([businessId, scheduledStart])
+  // Prevents the recurring daemon from double-creating a booking for the
+  // same schedule + slot if it runs twice (two replicas, a retried tick,
+  // etc). recurringScheduleId is null for one-off bookings, and Postgres
+  // allows multiple NULLs through a unique index, so this only constrains
+  // actual recurring-generated bookings.
+  @@unique([recurringScheduleId, scheduledStart])
 }
 
 model BookingAssignment {
