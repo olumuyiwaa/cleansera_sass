@@ -21,6 +21,14 @@ async function createAssignment(businessId, bookingId, cleanerId, actorUserId) {
   }
 
   let chosenCleaner = cleanerId;
+  if (chosenCleaner) {
+    const cleaner = await prisma.cleanerProfile.findFirst({ where: { id: chosenCleaner, businessId, status: 'ACTIVE' } });
+    if (!cleaner) {
+      const err = new Error('Cleaner not found for this business');
+      err.status = 404;
+      throw err;
+    }
+  }
   if (!chosenCleaner) {
     // find candidates
     const candidates = await scheduler.findAvailableCleaners(businessId, booking.scheduledStart, booking.scheduledEnd, { lat: booking.latitude, lng: booking.longitude });

@@ -23,9 +23,15 @@ async function getBookingById(businessId, id) {
 
 async function createBooking(businessId, actorUserId, payload) {
   const { customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart, sqft, rooms, addOnIds, frequency, couponCode } = payload;
-  const service = await prisma.service.findUnique({ where: { id: serviceId }, include: { addOns: true } });
+  const service = await prisma.service.findFirst({ where: { id: serviceId, businessId }, include: { addOns: true } });
   if (!service) {
     const err = new Error('Service not found');
+    err.status = 404;
+    throw err;
+  }
+  const customerRecord = await prisma.customer.findFirst({ where: { id: customerId, businessId } });
+  if (!customerRecord) {
+    const err = new Error('Customer not found for this business');
     err.status = 404;
     throw err;
   }
@@ -143,10 +149,27 @@ async function completeBooking(businessId, bookingId, actorUserId) {
 
 module.exports = { listBookings, getBookingById, createBooking, updateBooking, assignBooking, confirmBooking, completeBooking };
 
+/**
+ * Computes the first future occurrence of the given dayOfWeek/startTime
+ * (0 = Sunday .. 6 = Saturday, startTime as "HH:MM"), so a new schedule's
+ * first run actually lands on the requested day/time instead of firing on
+ * the next cron tick after creation.
+ */
+function computeInitialRunDate(dayOfWeek, startTime) {
+  const [hh, mm] = (startTime || '09:00').split(':').map(Number);
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(hh, mm || 0, 0, 0);
+
+  let daysUntilTarget = (dayOfWeek - next.getDay() + 7) % 7;
+  if (daysUntilTarget === 0 && next <= now) daysUntilTarget = 7; // today's slot already passed
+  next.setDate(next.getDate() + daysUntilTarget);
+  return next;
+}
+
 async function createRecurringSchedule(businessId, actorUserId, payload) {
   const { customerId, frequency, dayOfWeek, startTime } = payload;
-  const nextRunDate = new Date();
-  // user supplies dayOfWeek and startTime; computing nextRunDate is left simple here
+  const nextRunDate = computeInitialRunDate(dayOfWeek, startTime);
   const created = await prisma.recurringSchedule.create({ data: { businessId, customerId, frequency, dayOfWeek, startTime, nextRunDate } });
   await audit({ businessId, actorUserId, action: 'RECURRING_CREATED', entityType: 'RecurringSchedule', entityId: created.id });
   return created;

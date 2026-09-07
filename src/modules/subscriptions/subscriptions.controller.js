@@ -38,5 +38,3 @@ async function cancelSubscription(req, res, next) {
 }
 
 module.exports = { getSubscription, updateSubscription, createSubscription, cancelSubscription };
-
-module.exports = { getSubscription };

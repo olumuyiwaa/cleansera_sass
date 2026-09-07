@@ -16,18 +16,20 @@ app.use(
     credentials: true,
   })
 );
+// Stripe requires the raw, unparsed body for webhook signature verification.
+// This MUST be registered before express.json() below — once express.json()
+// runs on a request, the stream is consumed and Stripe's signature check
+// against bodyParser.raw() will always fail.
+app.post('/api/v1/webhooks/stripe', bodyParser.raw({ type: 'application/json' }), (req, res, next) => {
+  req.rawBody = req.body;
+  return stripeWebhookController.handle(req, res, next);
+});
+
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(apiLimiter);
 
 app.get('/health', (req, res) => res.json({ status: 'ok', service: 'cleansera-api' }));
-
-// Stripe requires raw body for webhook signature verification
-app.post('/api/v1/webhooks/stripe', bodyParser.raw({ type: 'application/json' }), (req, res, next) => {
-  // attach raw body for controller to verify
-  req.rawBody = req.body;
-  return stripeWebhookController.handle(req, res, next);
-});
 
 app.use('/api/v1', routes);
 

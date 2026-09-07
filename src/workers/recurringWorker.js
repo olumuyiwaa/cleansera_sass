@@ -20,7 +20,7 @@ async function processOnce() {
   for (const s of schedules) {
     try {
       // create booking based on recurring schedule
-      const customer = await prisma.customer.findUnique({ where: { id: s.customerId } });
+      const customer = await prisma.customer.findUnique({ where: { id: s.customerId }, include: { addresses: true } });
       if (!customer) continue;
       // choose a default service if none specified (not modeled on schedule) — pick first business service
       const service = await prisma.service.findFirst({ where: { businessId: s.businessId } });
@@ -28,8 +28,9 @@ async function processOnce() {
 
       const start = new Date(s.nextRunDate);
       const end = new Date(start.getTime() + service.estimatedMinutes * 60 * 1000);
+      const address = customer.addresses.find((a) => a.isPrimary) || customer.addresses[0];
 
-      const booking = await prisma.booking.create({ data: { businessId: s.businessId, customerId: s.customerId, serviceId: service.id, addressLine1: customer.addresses?.[0]?.line1 || '', city: customer.addresses?.[0]?.city || '', state: customer.addresses?.[0]?.state || '', scheduledStart: start, scheduledEnd: end, quotedPriceCents: service.basePriceCents, status: 'REQUESTED' } });
+      const booking = await prisma.booking.create({ data: { businessId: s.businessId, customerId: s.customerId, serviceId: service.id, addressLine1: address?.line1 || '', city: address?.city || '', state: address?.state || '', latitude: address?.latitude, longitude: address?.longitude, scheduledStart: start, scheduledEnd: end, quotedPriceCents: service.basePriceCents, status: 'REQUESTED' } });
 
       await notifications.notifyBookingCreated(s.businessId, booking);
 
@@ -47,22 +48,16 @@ async function processOnce() {
   }
 }
 
-async function startDaemon(cronExpr = null) {
-  if (cronExpr) {
-    const cron = require('node-cron');
-    cron.schedule(cronExpr, () => processOnce());
-    logger.info('recurring worker scheduled', { cronExpr });
-  } else {
-    await processOnce();
-  }
-}
-
+// NOTE: this module intentionally does not schedule its own cron. Scheduling
+// lives in recurringDaemon.js (npm run recurring-daemon) — running both would
+// double-create recurring bookings on every tick. This file exports
+// processOnce() for the daemon to call, and can still be run directly for a
+// single manual pass (e.g. from a one-off script or a Kubernetes Job).
 if (require.main === module) {
-  const cronExpr = process.env.RECURRING_CRON || null;
-  startDaemon(cronExpr).catch((e) => {
-    logger.error('recurring worker failed', e);
+  processOnce().catch((e) => {
+    logger.error('recurring worker (single pass) failed', e);
     process.exit(1);
   });
 }
 
-module.exports = { processOnce, startDaemon };
+module.exports = { processOnce };

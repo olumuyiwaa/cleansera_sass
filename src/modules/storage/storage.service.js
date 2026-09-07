@@ -7,6 +7,12 @@ async function listStorageItems(businessId) {
 
 async function createStorageItem(businessId, payload) {
   // payload: { bookingId, stage, storageKey }
+  const booking = await prisma.booking.findFirst({ where: { id: payload.bookingId, businessId } });
+  if (!booking) {
+    const err = new Error('Booking not found for this business');
+    err.status = 404;
+    throw err;
+  }
   const created = await prisma.jobPhoto.create({ data: { ...payload } });
   return created;
 }
@@ -22,5 +28,3 @@ async function deleteStorageItem(businessId, id) {
 }
 
 module.exports = { listStorageItems, createStorageItem, deleteStorageItem };
-
-module.exports = { listStorageItems };

@@ -9,31 +9,33 @@ module.exports = { getSubscriptionForBusiness };
 const stripeClient = require('../../lib/stripeClient');
 
 async function createSubscriptionForBusiness(businessId, { planId, stripeCustomerId, stripeSubscriptionId, billingEmail, billingPhone }) {
-  // if no stripeCustomerId provided, create one
+  // if no stripeCustomerId provided, create one — this must succeed, since a
+  // subscription with no real Stripe customer behind it can never be billed
+  // or corrected by a webhook later.
   let stripeCid = stripeCustomerId;
   if (!stripeCid) {
-    try {
-      stripeCid = await stripeClient.createCustomerForBusiness(businessId, { email: billingEmail, phone: billingPhone });
-    } catch (e) {
-      // log and continue — DB record won't have stripe ids
-    }
+    stripeCid = await stripeClient.createCustomerForBusiness(businessId, { email: billingEmail, phone: billingPhone });
   }
 
-  // create Stripe subscription if we have a customer and the plan exists
   let stripeSubId = stripeSubscriptionId;
-  try {
-    if (stripeCid && planId) {
-      const plan = await prisma.subscriptionPlan.findUnique({ where: { id: planId } });
-      if (plan && plan.stripePriceId) {
-        const stripeSub = await stripeClient.createSubscription(stripeCid, plan.stripePriceId);
-        stripeSubId = stripeSub.id;
-      }
+  if (!stripeSubId) {
+    const plan = await prisma.subscriptionPlan.findUnique({ where: { id: planId } });
+    if (!plan || !plan.stripePriceId) {
+      const err = new Error('Subscription plan not found or missing a Stripe price');
+      err.status = 422;
+      throw err;
     }
-  } catch (e) {
-    // ignore stripe failures for now
+    const stripeSub = await stripeClient.createSubscription(stripeCid, plan.stripePriceId);
+    stripeSubId = stripeSub.id;
   }
 
-  const created = await prisma.businessSubscription.create({ data: { businessId, planId, stripeCustomerId: stripeCid, stripeSubscriptionId: stripeSubId, status: 'ACTIVE' } });
+  // Status starts TRIALING/incomplete here regardless — the webhook handler
+  // (invoice.payment_succeeded / customer.subscription.updated) is the only
+  // place that should ever flip a subscription to ACTIVE, once Stripe
+  // confirms payment actually went through.
+  const created = await prisma.businessSubscription.create({
+    data: { businessId, planId, stripeCustomerId: stripeCid, stripeSubscriptionId: stripeSubId, status: 'TRIALING' },
+  });
   return created;
 }
 

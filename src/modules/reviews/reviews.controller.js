@@ -38,5 +38,3 @@ async function remove(req, res, next) {
 }
 
 module.exports = { list, create, get, remove };
-
-module.exports = { list };
