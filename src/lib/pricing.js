@@ -76,19 +76,22 @@ async function calculateQuote(service, payload = {}) {
   if (businessId && couponCode) {
     try {
       const coupon = await prisma.coupon.findFirst({ where: { businessId, code: couponCode, isActive: true } });
-      if (coupon) {
-        // expiry check
-        if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) {
-          // expired -> ignore coupon
-        } else if (coupon.appliesToServiceId && coupon.appliesToServiceId !== service.id) {
-          // coupon not applicable to this service -> ignore
-        } else {
-          const t = String(coupon.type || '').toUpperCase();
-          if (t === 'PERCENT') {
-            total = Math.round(total * (1 - (coupon.value || 0) / 100));
-          } else if (t === 'AMOUNT') {
-            total = Math.max(0, total - (coupon.value || 0));
-          }
+      if (!coupon) {
+        couponInfo = { valid: false, reason: 'not_found' };
+      } else if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) {
+        couponInfo = { valid: false, reason: 'expired', couponId: coupon.id };
+      } else if (coupon.appliesToServiceId && coupon.appliesToServiceId !== service.id) {
+        couponInfo = { valid: false, reason: 'service_mismatch', couponId: coupon.id };
+      } else if (coupon.maxRedemptions && (coupon.redeemedCount || 0) >= coupon.maxRedemptions) {
+        couponInfo = { valid: false, reason: 'max_redemptions', couponId: coupon.id };
+      } else {
+        // coupon is currently valid (note: per-customer limits require customer context and are checked at booking time)
+        couponInfo = { valid: true, couponId: coupon.id, type: coupon.type, value: coupon.value };
+        const t = String(coupon.type || '').toUpperCase();
+        if (t === 'PERCENT') {
+          total = Math.round(total * (1 - (coupon.value || 0) / 100));
+        } else if (t === 'AMOUNT') {
+          total = Math.max(0, total - (coupon.value || 0));
         }
       }
     } catch (e) {
@@ -104,7 +107,9 @@ async function calculateQuote(service, payload = {}) {
     estimatedMinutes,
   };
 
-  return { priceCents: total, breakdown };
+  const result = { priceCents: total, breakdown };
+  if (typeof couponInfo !== 'undefined') result.coupon = couponInfo;
+  return result;
 }
 
 module.exports = { calculateQuote };

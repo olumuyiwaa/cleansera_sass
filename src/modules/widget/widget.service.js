@@ -58,9 +58,10 @@ async function submitBooking(businessId, payload) {
     firstName, lastName, email, phone,
     addressLine1, addressLine2, city, state, latitude, longitude,
     serviceId, addOnIds = [], scheduledStart,
+    couponCode,
   } = payload;
 
-  const { priceCents, estimatedMinutes } = await quote(businessId, { serviceId, addOnIds, latitude, longitude });
+  const { priceCents, estimatedMinutes, coupon: couponInfo } = await quote(businessId, { serviceId, addOnIds, latitude, longitude, scheduledStart, couponCode });
 
   // availability: ensure at least one cleaner can cover the requested window
   if (scheduledStart) {
@@ -75,14 +76,47 @@ async function submitBooking(businessId, payload) {
     }
   }
 
+  // handle booking + coupon redemption atomically when couponCode provided
+  const start = new Date(scheduledStart);
+  const end = new Date(start.getTime() + estimatedMinutes * 60 * 1000);
+
+  if (couponCode) {
+    const coupon = await prisma.coupon.findFirst({ where: { businessId, code: couponCode, isActive: true } });
+    if (!coupon) { const err = new Error('Coupon not found'); err.status = 422; throw err; }
+    if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) { const err = new Error('Coupon expired'); err.status = 422; throw err; }
+    if (coupon.appliesToServiceId && coupon.appliesToServiceId !== serviceId) { const err = new Error('Coupon not applicable to this service'); err.status = 422; throw err; }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const cust = await tx.customer.upsert({ where: { businessId_phone: { businessId, phone } }, update: { firstName, lastName, email }, create: { businessId, firstName, lastName, email, phone } });
+
+      if (coupon.perCustomerLimit) {
+        const used = await tx.booking.count({ where: { customerId: cust.id, couponId: coupon.id } });
+        if (used >= coupon.perCustomerLimit) { const err = new Error('Coupon per-customer redemption limit reached'); err.status = 422; throw err; }
+      }
+
+      const b = await tx.booking.create({ data: { businessId, customerId: cust.id, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart: start, scheduledEnd: end, quotedPriceCents: priceCents, status: 'REQUESTED', couponId: coupon.id } });
+
+      if (coupon.maxRedemptions) {
+        const updated = await tx.coupon.updateMany({ where: { id: coupon.id, redeemedCount: { lt: coupon.maxRedemptions } }, data: { redeemedCount: { increment: 1 } } });
+        if (updated.count === 0) { const err = new Error('Coupon redemption limit reached'); err.status = 409; throw err; }
+      } else {
+        await tx.coupon.update({ where: { id: coupon.id }, data: { redeemedCount: { increment: 1 } } });
+      }
+
+      return { booking: b, customer: cust };
+    });
+
+    const booking = result.booking;
+    const customer = result.customer;
+    try { const notifications = require('../notifications/notifications.service'); await notifications.notifyBookingCreated(businessId, booking); await notifications.sendCustomerBookingConfirmation(businessId, booking, customer); } catch (e) {}
+    return booking;
+  }
+
   const customer = await prisma.customer.upsert({
     where: { businessId_phone: { businessId, phone } },
     update: { firstName, lastName, email },
     create: { businessId, firstName, lastName, email, phone },
   });
-
-  const start = new Date(scheduledStart);
-  const end = new Date(start.getTime() + estimatedMinutes * 60 * 1000);
 
   const booking = await prisma.booking.create({
     data: {

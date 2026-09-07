@@ -22,7 +22,7 @@ async function getBookingById(businessId, id) {
 }
 
 async function createBooking(businessId, actorUserId, payload) {
-  const { customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart, sqft, rooms, addOnIds, frequency } = payload;
+  const { customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart, sqft, rooms, addOnIds, frequency, couponCode } = payload;
   const service = await prisma.service.findUnique({ where: { id: serviceId }, include: { addOns: true } });
   if (!service) {
     const err = new Error('Service not found');
@@ -34,6 +34,49 @@ async function createBooking(businessId, actorUserId, payload) {
 
   const start = new Date(scheduledStart);
   const end = new Date(start.getTime() + (quote.breakdown.estimatedMinutes || service.estimatedMinutes) * 60 * 1000);
+
+  // If couponCode provided, validate and enforce redemption limits within a transaction
+  if (couponCode) {
+    const coupon = await prisma.coupon.findFirst({ where: { businessId, code: couponCode, isActive: true } });
+    if (!coupon) {
+      const err = new Error('Coupon not found'); err.status = 422; throw err;
+    }
+    if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) {
+      const err = new Error('Coupon expired'); err.status = 422; throw err;
+    }
+    if (coupon.appliesToServiceId && coupon.appliesToServiceId !== serviceId) {
+      const err = new Error('Coupon not applicable to this service'); err.status = 422; throw err;
+    }
+
+    const booking = await prisma.$transaction(async (tx) => {
+      // per-customer limit
+      if (coupon.perCustomerLimit) {
+        const used = await tx.booking.count({ where: { customerId, couponId: coupon.id } });
+        if (used >= coupon.perCustomerLimit) {
+          const err = new Error('Coupon per-customer redemption limit reached'); err.status = 422; throw err;
+        }
+      }
+
+      const b = await tx.booking.create({ data: { businessId, customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart: start, scheduledEnd: end, quotedPriceCents: quote.priceCents, status: 'REQUESTED', couponId: coupon.id } });
+
+      // attempt to increment redeemedCount with maxRedemptions enforcement
+      if (coupon.maxRedemptions) {
+        const updated = await tx.coupon.updateMany({ where: { id: coupon.id, redeemedCount: { lt: coupon.maxRedemptions } }, data: { redeemedCount: { increment: 1 } } });
+        if (updated.count === 0) {
+          const err = new Error('Coupon redemption limit reached'); err.status = 409; throw err;
+        }
+      } else {
+        await tx.coupon.update({ where: { id: coupon.id }, data: { redeemedCount: { increment: 1 } } });
+      }
+
+      return b;
+    });
+
+    await audit({ businessId, actorUserId, action: 'BOOKING_CREATED', entityType: 'Booking', entityId: booking.id });
+    await notifications.notifyBookingCreated(businessId, booking);
+    try { const customer = await prisma.customer.findUnique({ where: { id: customerId } }); if (customer) await notifications.sendCustomerBookingConfirmation(businessId, booking, customer); } catch (e) {}
+    return booking;
+  }
 
   const booking = await prisma.booking.create({ data: { businessId, customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart: start, scheduledEnd: end, quotedPriceCents: quote.priceCents, status: 'REQUESTED' } });
 

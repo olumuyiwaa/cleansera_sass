@@ -453,6 +453,8 @@ model Booking {
   scheduledEnd    DateTime
   status          BookingStatus @default(REQUESTED)
   quotedPriceCents Int
+  couponId        String?
+  coupon          Coupon?  @relation(fields: [couponId], references: [id])
   // Bookkeeping only — CleanSera does not process this payment
   paymentStatus   String   @default("UNPAID") // UNPAID | PAID | PARTIAL
   paymentNote     String?
