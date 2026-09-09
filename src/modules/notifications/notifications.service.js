@@ -83,3 +83,58 @@ async function listForBusiness(businessId, userId) {
 }
 
 module.exports = { sendInvite, notifyBookingCreated, sendCustomerBookingConfirmation, notifyCleanerAssigned, listForBusiness };
+
+async function notifyMembers(businessId, type, title, body, extraEmit) {
+  const members = await prisma.businessMember.findMany({ where: { businessId, isActive: true } });
+  const created = [];
+  for (const m of members) {
+    try {
+      const n = await prisma.notification.create({ data: { businessId, recipientUserId: m.userId, type, title, body } });
+      created.push(n);
+      try { getIo().to(`user:${m.userId}`).emit('notification', n); } catch (e) {}
+      if (extraEmit) {
+        try { getIo().to(`business:${businessId}`).emit(extraEmit.event, extraEmit.payload); } catch (e) {}
+      }
+    } catch (err) {
+      logger.error('failed to create member notification', err);
+    }
+  }
+  return created;
+}
+
+async function notifyBookingCancelled(businessId, booking) {
+  return notifyMembers(
+    businessId,
+    'BOOKING_CANCELLED',
+    'Booking cancelled',
+    `Booking ${booking.id} scheduled for ${booking.scheduledStart} was cancelled.`,
+    { event: 'booking_cancelled', payload: { booking } }
+  );
+}
+
+async function notifyBookingRescheduled(businessId, booking) {
+  return notifyMembers(
+    businessId,
+    'BOOKING_RESCHEDULED',
+    'Booking rescheduled',
+    `Booking ${booking.id} moved to ${booking.scheduledStart}.`,
+    { event: 'booking_rescheduled', payload: { booking } }
+  );
+}
+
+async function requestReview(businessId, booking, customer) {
+  const title = 'How was your cleaning?';
+  const text = `Hi ${customer.firstName || ''}, thanks for choosing us. Please rate your recent cleaning and leave a short review.`;
+  try {
+    if (customer.email) await notificationClient.sendEmail({ to: customer.email, subject: title, text });
+    if (customer.phone) await notificationClient.sendSms({ to: customer.phone, body: text });
+  } catch (e) {
+    logger.error('failed to send review request', e);
+  }
+  // also notify business members that review was requested
+  return notifyMembers(businessId, 'REVIEW_REQUESTED', 'Review requested', `Review request sent for booking ${booking.id}`);
+}
+
+module.exports.notifyBookingCancelled = notifyBookingCancelled;
+module.exports.notifyBookingRescheduled = notifyBookingRescheduled;
+module.exports.requestReview = requestReview;

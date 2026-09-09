@@ -96,3 +96,34 @@ async function cancelRecurring(req, res, next) {
 module.exports.createRecurring = createRecurring;
 module.exports.listRecurring = listRecurring;
 module.exports.cancelRecurring = cancelRecurring;
+
+async function cancel(req, res, next) {
+  try {
+    const booking = await service.cancelBooking(req.businessId, req.params.id, req.user.id, req.body.reason);
+    return success(res, 200, booking, 'Booking cancelled');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function reschedule(req, res, next) {
+  try {
+    const booking = await service.rescheduleBooking(req.businessId, req.params.id, req.user.id, req.body);
+    return success(res, 200, booking, 'Booking rescheduled');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updatePayment(req, res, next) {
+  try {
+    const booking = await service.updatePaymentStatus(req.businessId, req.params.id, req.user.id, req.body);
+    return success(res, 200, booking, 'Payment status updated');
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports.cancel = cancel;
+module.exports.reschedule = reschedule;
+module.exports.updatePayment = updatePayment;

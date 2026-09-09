@@ -11,14 +11,24 @@ router.use(authenticate, scopeToBusiness);
 
 router.get('/', controller.list);
 router.post(
-	'/',
-	requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'),
-	[body('firstName').notEmpty(), body('phone').notEmpty()],
-	validate,
-	controller.create
+  '/',
+  requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'),
+  [body('firstName').notEmpty(), body('lastName').notEmpty(), body('phone').notEmpty()],
+  validate,
+  controller.create
 );
 router.get('/:id', controller.get);
 router.put('/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.update);
 router.delete('/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.remove);
+
+router.post(
+  '/:id/addresses',
+  requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'),
+  [body('line1').notEmpty(), body('city').notEmpty(), body('state').notEmpty()],
+  validate,
+  controller.addAddress
+);
+router.put('/:id/addresses/:addressId', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.updateAddress);
+router.delete('/:id/addresses/:addressId', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.deleteAddress);
 
 module.exports = router;

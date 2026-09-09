@@ -3,27 +3,153 @@ const prisma = require('../../config/database');
 async function generateSummary(businessId) {
   const totalBookings = await prisma.booking.count({ where: { businessId } });
   const byStatus = await prisma.booking.groupBy({ by: ['status'], where: { businessId }, _count: { _all: true } });
-  const recent = await prisma.booking.findMany({ where: { businessId }, orderBy: { createdAt: 'desc' }, take: 10 });
-
+  const recent = await prisma.booking.findMany({
+    where: { businessId },
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+    include: { customer: true, service: true },
+  });
   return { totalBookings, byStatus, recent };
 }
 
-module.exports = { generateSummary };
-
 async function generateKPIs(businessId, { from, to } = {}) {
   const where = { businessId };
-  if (from) where.scheduledStart = { gte: new Date(from) };
-  if (to) where.scheduledStart = { ...(where.scheduledStart || {}), lte: new Date(to) };
+  if (from || to) {
+    where.scheduledStart = {};
+    if (from) where.scheduledStart.gte = new Date(from);
+    if (to) where.scheduledStart.lte = new Date(to);
+  }
 
   const total = await prisma.booking.count({ where });
   const completed = await prisma.booking.count({ where: { ...where, status: 'COMPLETED' } });
+  const cancelled = await prisma.booking.count({ where: { ...where, status: 'CANCELLED' } });
+  const noShows = await prisma.booking.count({
+    where: {
+      ...where,
+      status: { in: ['CONFIRMED', 'ASSIGNED'] },
+      scheduledEnd: { lt: new Date() },
+    },
+  });
   const completionRate = total === 0 ? 0 : Math.round((completed / total) * 10000) / 100;
+  const cancelRate = total === 0 ? 0 : Math.round((cancelled / total) * 10000) / 100;
 
-  const bookingsPerCleaner = await prisma.bookingAssignment.groupBy({ by: ['cleanerId'], where: { booking: { businessId } }, _count: { bookingId: true }, take: 20 });
+  const revenueAgg = await prisma.booking.aggregate({
+    where: { ...where, status: 'COMPLETED' },
+    _sum: { quotedPriceCents: true },
+  });
+  const revenueCents = revenueAgg._sum.quotedPriceCents || 0;
 
-  const repeatCustomers = await prisma.customer.count({ where: { businessId, bookings: { some: {} } } });
+  const paidAgg = await prisma.booking.aggregate({
+    where: { ...where, paymentStatus: 'PAID' },
+    _sum: { quotedPriceCents: true },
+  });
+  const collectedCents = paidAgg._sum.quotedPriceCents || 0;
 
-  return { total, completed, completionRate, bookingsPerCleaner, repeatCustomers };
+  const bookingsPerCleaner = await prisma.bookingAssignment.groupBy({
+    by: ['cleanerId'],
+    where: { booking: where },
+    _count: { bookingId: true },
+  });
+
+  const activeCleaners = await prisma.cleanerProfile.count({ where: { businessId, status: 'ACTIVE' } });
+  const totalCustomers = await prisma.customer.count({ where: { businessId } });
+  const repeatCustomers = await prisma.customer.count({
+    where: { businessId, bookings: { some: {} } },
+  });
+
+  // Utilization: completed job minutes / (active cleaners * period days * 8h)
+  const completedJobs = await prisma.booking.findMany({
+    where: { ...where, status: 'COMPLETED' },
+    select: { scheduledStart: true, scheduledEnd: true },
+  });
+  const workedMinutes = completedJobs.reduce((sum, b) => {
+    const ms = new Date(b.scheduledEnd) - new Date(b.scheduledStart);
+    return sum + (ms > 0 ? ms / 60000 : 0);
+  }, 0);
+
+  let periodDays = 30;
+  if (from && to) {
+    periodDays = Math.max(1, Math.ceil((new Date(to) - new Date(from)) / 86400000));
+  }
+  const capacityMinutes = activeCleaners * periodDays * 8 * 60;
+  const utilizationPct = capacityMinutes === 0 ? 0 : Math.round((workedMinutes / capacityMinutes) * 10000) / 100;
+
+  const avgTicketCents = completed === 0 ? 0 : Math.round(revenueCents / completed);
+
+  return {
+    total,
+    completed,
+    cancelled,
+    noShows,
+    completionRate,
+    cancelRate,
+    revenueCents,
+    collectedCents,
+    avgTicketCents,
+    bookingsPerCleaner,
+    activeCleaners,
+    totalCustomers,
+    repeatCustomers,
+    workedMinutes: Math.round(workedMinutes),
+    utilizationPct,
+  };
 }
 
-module.exports.generateKPIs = generateKPIs;
+async function revenueByDay(businessId, { from, to } = {}) {
+  const where = { businessId, status: 'COMPLETED' };
+  if (from || to) {
+    where.scheduledStart = {};
+    if (from) where.scheduledStart.gte = new Date(from);
+    if (to) where.scheduledStart.lte = new Date(to);
+  }
+  const bookings = await prisma.booking.findMany({
+    where,
+    select: { scheduledStart: true, quotedPriceCents: true },
+    orderBy: { scheduledStart: 'asc' },
+  });
+  const byDay = {};
+  for (const b of bookings) {
+    const day = new Date(b.scheduledStart).toISOString().slice(0, 10);
+    byDay[day] = (byDay[day] || 0) + (b.quotedPriceCents || 0);
+  }
+  return Object.entries(byDay).map(([date, revenueCents]) => ({ date, revenueCents }));
+}
+
+async function cleanerPerformance(businessId, { from, to } = {}) {
+  const bookingWhere = { businessId };
+  if (from || to) {
+    bookingWhere.scheduledStart = {};
+    if (from) bookingWhere.scheduledStart.gte = new Date(from);
+    if (to) bookingWhere.scheduledStart.lte = new Date(to);
+  }
+  const cleaners = await prisma.cleanerProfile.findMany({
+    where: { businessId, status: { in: ['ACTIVE', 'OFFBOARDED', 'SUSPENDED'] } },
+    include: { user: { select: { firstName: true, lastName: true, email: true } } },
+  });
+  const results = [];
+  for (const c of cleaners) {
+    const assignments = await prisma.bookingAssignment.findMany({
+      where: { cleanerId: c.id, booking: bookingWhere },
+      include: { booking: true },
+    });
+    const completed = assignments.filter((a) => a.booking.status === 'COMPLETED').length;
+    const revenueCents = assignments
+      .filter((a) => a.booking.status === 'COMPLETED')
+      .reduce((s, a) => s + (a.booking.quotedPriceCents || 0), 0);
+    const onTimeCheckins = assignments.filter((a) => a.checkedInAt).length;
+    results.push({
+      cleanerId: c.id,
+      name: `${c.user.firstName} ${c.user.lastName}`,
+      email: c.user.email,
+      status: c.status,
+      jobs: assignments.length,
+      completed,
+      revenueCents,
+      checkIns: onTimeCheckins,
+    });
+  }
+  results.sort((a, b) => b.revenueCents - a.revenueCents);
+  return results;
+}
+
+module.exports = { generateSummary, generateKPIs, revenueByDay, cleanerPerformance };

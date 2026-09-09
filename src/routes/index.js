@@ -24,5 +24,6 @@ router.use('/storage', require('../modules/storage/storage.routes'));
 
 // Public booking widget (unauthenticated, resolved from Host header)
 router.use('/widget', require('../modules/widget/widget.routes'));
+router.use('/portal', require('../modules/customerPortal/customerPortal.routes'));
 
 module.exports = router;

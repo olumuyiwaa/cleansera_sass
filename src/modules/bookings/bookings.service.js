@@ -203,3 +203,105 @@ async function cancelRecurringSchedule(businessId, id, actorUserId) {
 module.exports.createRecurringSchedule = createRecurringSchedule;
 module.exports.listRecurringSchedules = listRecurringSchedules;
 module.exports.cancelRecurringSchedule = cancelRecurringSchedule;
+
+async function cancelBooking(businessId, bookingId, actorUserId, reason) {
+  const booking = await getBookingById(businessId, bookingId);
+  if (booking.status === 'COMPLETED' || booking.status === 'CANCELLED') {
+    const err = new Error(`Cannot cancel a booking that is already ${booking.status}`);
+    err.status = 422;
+    throw err;
+  }
+  const updated = await prisma.booking.update({
+    where: { id: bookingId },
+    data: { status: 'CANCELLED', cancelReason: reason || null },
+  });
+  await audit({ businessId, actorUserId, action: 'BOOKING_CANCELLED', entityType: 'Booking', entityId: bookingId, metadata: { reason } });
+  try {
+    await notifications.notifyBookingCancelled(businessId, updated);
+  } catch (e) { /* non-fatal */ }
+  return updated;
+}
+
+async function rescheduleBooking(businessId, bookingId, actorUserId, { scheduledStart, scheduledEnd }) {
+  const booking = await getBookingById(businessId, bookingId);
+  if (booking.status === 'COMPLETED' || booking.status === 'CANCELLED') {
+    const err = new Error(`Cannot reschedule a booking that is ${booking.status}`);
+    err.status = 422;
+    throw err;
+  }
+  const start = new Date(scheduledStart);
+  if (Number.isNaN(start.getTime())) {
+    const err = new Error('Invalid scheduledStart');
+    err.status = 422;
+    throw err;
+  }
+  let end;
+  if (scheduledEnd) {
+    end = new Date(scheduledEnd);
+  } else {
+    const durationMs = new Date(booking.scheduledEnd).getTime() - new Date(booking.scheduledStart).getTime();
+    end = new Date(start.getTime() + (durationMs > 0 ? durationMs : 60 * 60 * 1000));
+  }
+
+  // If assigned, check cleaner still free at new time
+  const assignments = await prisma.bookingAssignment.findMany({ where: { bookingId } });
+  for (const a of assignments) {
+    const overlap = await prisma.bookingAssignment.findFirst({
+      where: {
+        cleanerId: a.cleanerId,
+        bookingId: { not: bookingId },
+        booking: { scheduledStart: { lte: end }, scheduledEnd: { gte: start }, status: { not: 'CANCELLED' } },
+      },
+    });
+    if (overlap) {
+      const err = new Error('Assigned cleaner is not available at the new time');
+      err.status = 409;
+      throw err;
+    }
+  }
+
+  const updated = await prisma.booking.update({
+    where: { id: bookingId },
+    data: { scheduledStart: start, scheduledEnd: end },
+  });
+  await audit({ businessId, actorUserId, action: 'BOOKING_RESCHEDULED', entityType: 'Booking', entityId: bookingId, metadata: { scheduledStart: start, scheduledEnd: end } });
+  try {
+    await notifications.notifyBookingRescheduled(businessId, updated);
+  } catch (e) { /* non-fatal */ }
+  return updated;
+}
+
+async function updatePaymentStatus(businessId, bookingId, actorUserId, { paymentStatus, paymentNote }) {
+  await getBookingById(businessId, bookingId);
+  const allowed = ['UNPAID', 'PAID', 'PARTIAL', 'REFUNDED'];
+  if (!allowed.includes(paymentStatus)) {
+    const err = new Error(`paymentStatus must be one of ${allowed.join(', ')}`);
+    err.status = 422;
+    throw err;
+  }
+  const updated = await prisma.booking.update({
+    where: { id: bookingId },
+    data: { paymentStatus, paymentNote: paymentNote || null },
+  });
+  await audit({ businessId, actorUserId, action: 'BOOKING_PAYMENT_UPDATED', entityType: 'Booking', entityId: bookingId, metadata: { paymentStatus, paymentNote } });
+  return updated;
+}
+
+// Override completeBooking to request review after completion
+async function completeBookingWithReview(businessId, bookingId, actorUserId) {
+  await getBookingById(businessId, bookingId);
+  const updated = await prisma.booking.update({ where: { id: bookingId }, data: { status: 'COMPLETED' } });
+  await audit({ businessId, actorUserId, action: 'BOOKING_COMPLETED', entityType: 'Booking', entityId: bookingId });
+  try {
+    const full = await prisma.booking.findUnique({ where: { id: bookingId }, include: { customer: true } });
+    if (full && full.customer) {
+      await notifications.requestReview(businessId, full, full.customer);
+    }
+  } catch (e) { /* non-fatal */ }
+  return updated;
+}
+
+module.exports.cancelBooking = cancelBooking;
+module.exports.rescheduleBooking = rescheduleBooking;
+module.exports.updatePaymentStatus = updatePaymentStatus;
+module.exports.completeBooking = completeBookingWithReview;
