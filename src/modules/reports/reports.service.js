@@ -57,7 +57,6 @@ async function generateKPIs(businessId, { from, to } = {}) {
     where: { businessId, bookings: { some: {} } },
   });
 
-  // Utilization: completed job minutes / (active cleaners * period days * 8h)
   const completedJobs = await prisma.booking.findMany({
     where: { ...where, status: 'COMPLETED' },
     select: { scheduledStart: true, scheduledEnd: true },
@@ -152,4 +151,78 @@ async function cleanerPerformance(businessId, { from, to } = {}) {
   return results;
 }
 
-module.exports = { generateSummary, generateKPIs, revenueByDay, cleanerPerformance };
+/**
+ * Audit trail for the dashboard page.
+ * Maps Prisma AuditLog → shape expected by frontend
+ * (action, resource, resourceId, user, previousData, newData, ipAddress).
+ */
+async function auditTrail(businessId, { page = 1, limit = 20, from, to, userId, resource, action } = {}) {
+  const take = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+  const skip = (Math.max(parseInt(page, 10) || 1, 1) - 1) * take;
+
+  const where = { businessId };
+  if (from || to) {
+    where.createdAt = {};
+    if (from) where.createdAt.gte = new Date(from);
+    if (to) {
+      const end = new Date(to);
+      end.setHours(23, 59, 59, 999);
+      where.createdAt.lte = end;
+    }
+  }
+  if (userId) where.actorUserId = userId;
+  if (resource) where.entityType = resource;
+  if (action) where.action = { contains: action, mode: 'insensitive' };
+
+  const [total, rows] = await Promise.all([
+    prisma.auditLog.count({ where }),
+    prisma.auditLog.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take,
+      include: {
+        actor: { select: { id: true, email: true, firstName: true, lastName: true } },
+      },
+    }),
+  ]);
+
+  const data = rows.map((row) => {
+    const meta = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+    return {
+      id: row.id,
+      createdAt: row.createdAt,
+      action: row.action,
+      resource: row.entityType,
+      resourceId: row.entityId,
+      ipAddress: meta.ipAddress || meta.ip || null,
+      user: row.actor
+        ? {
+            email: row.actor.email,
+            role: meta.role || null,
+            name: `${row.actor.firstName || ''} ${row.actor.lastName || ''}`.trim(),
+          }
+        : null,
+      previousData: meta.previousData || meta.before || null,
+      newData: meta.newData || meta.after || (Object.keys(meta).length ? meta : null),
+    };
+  });
+
+  return {
+    data,
+    pagination: {
+      page: Math.max(parseInt(page, 10) || 1, 1),
+      limit: take,
+      total,
+      totalPages: Math.ceil(total / take) || 1,
+    },
+  };
+}
+
+module.exports = {
+  generateSummary,
+  generateKPIs,
+  revenueByDay,
+  cleanerPerformance,
+  auditTrail,
+};

@@ -21,9 +21,12 @@ router.use('/notifications', require('../modules/notifications/notifications.rou
 router.use('/reviews', require('../modules/reviews/reviews.routes'));
 router.use('/reports', require('../modules/reports/reports.routes'));
 router.use('/storage', require('../modules/storage/storage.routes'));
+router.use('/support-tickets', require('../modules/supportTickets/supportTickets.routes'));
+router.use('/cleaner-documents', require('../modules/cleanerDocuments/cleanerDocuments.routes'));
 
 // Public booking widget (unauthenticated, resolved from Host header)
 router.use('/widget', require('../modules/widget/widget.routes'));
 router.use('/portal', require('../modules/customerPortal/customerPortal.routes'));
+router.use('/demo-requests', require('../modules/demoRequests/demoRequests.routes'));
 
 module.exports = router;

@@ -35,6 +35,8 @@ router.post(
 );
 router.get('/recurring', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.listRecurring);
 router.post('/recurring/:id/cancel', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.cancelRecurring);
+router.post('/recurring/:id/pause', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.pauseRecurring);
+router.post('/recurring/:id/resume', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.resumeRecurring);
 
 router.get('/:id', controller.get);
 router.put('/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.update);
@@ -61,6 +63,11 @@ router.post(
 	[body('paymentStatus').notEmpty()],
 	validate,
 	controller.updatePayment
+);
+router.post(
+	'/:id/payment-link',
+	requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'),
+	controller.createPaymentLink
 );
 
 module.exports = router;

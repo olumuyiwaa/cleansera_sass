@@ -204,6 +204,34 @@ module.exports.createRecurringSchedule = createRecurringSchedule;
 module.exports.listRecurringSchedules = listRecurringSchedules;
 module.exports.cancelRecurringSchedule = cancelRecurringSchedule;
 
+async function pauseRecurringSchedule(businessId, id, actorUserId) {
+  const rs = await prisma.recurringSchedule.findFirst({ where: { id, businessId } });
+  if (!rs) {
+    const err = new Error('Recurring schedule not found');
+    err.status = 404;
+    throw err;
+  }
+  await prisma.recurringSchedule.update({ where: { id }, data: { isActive: false } });
+  await audit({ businessId, actorUserId, action: 'RECURRING_PAUSED', entityType: 'RecurringSchedule', entityId: id });
+  return { id, isActive: false };
+}
+
+async function resumeRecurringSchedule(businessId, id, actorUserId) {
+  const rs = await prisma.recurringSchedule.findFirst({ where: { id, businessId } });
+  if (!rs) {
+    const err = new Error('Recurring schedule not found');
+    err.status = 404;
+    throw err;
+  }
+  await prisma.recurringSchedule.update({ where: { id }, data: { isActive: true } });
+  await audit({ businessId, actorUserId, action: 'RECURRING_RESUMED', entityType: 'RecurringSchedule', entityId: id });
+  return { id, isActive: true };
+}
+
+module.exports.pauseRecurringSchedule = pauseRecurringSchedule;
+module.exports.resumeRecurringSchedule = resumeRecurringSchedule;
+
+
 async function cancelBooking(businessId, bookingId, actorUserId, reason) {
   const booking = await getBookingById(businessId, bookingId);
   if (booking.status === 'COMPLETED' || booking.status === 'CANCELLED') {
@@ -305,3 +333,58 @@ module.exports.cancelBooking = cancelBooking;
 module.exports.rescheduleBooking = rescheduleBooking;
 module.exports.updatePaymentStatus = updatePaymentStatus;
 module.exports.completeBooking = completeBookingWithReview;
+
+const { createBookingCheckoutSession } = require('../../lib/stripeClient');
+
+async function createPaymentLink(businessId, bookingId, actorUserId, { successUrl, cancelUrl, currency } = {}) {
+  const booking = await prisma.booking.findFirst({
+    where: { id: bookingId, businessId },
+    include: { customer: true, service: true },
+  });
+  if (!booking) {
+    const err = new Error('Booking not found');
+    err.status = 404;
+    throw err;
+  }
+  if (booking.paymentStatus === 'PAID') {
+    const err = new Error('Booking is already paid');
+    err.status = 409;
+    throw err;
+  }
+  if (!booking.quotedPriceCents || booking.quotedPriceCents <= 0) {
+    const err = new Error('Booking has no quoted price');
+    err.status = 422;
+    throw err;
+  }
+
+  const session = await createBookingCheckoutSession({
+    bookingId: booking.id,
+    businessId,
+    amountCents: booking.quotedPriceCents,
+    currency: currency || process.env.DEFAULT_CURRENCY || 'ngn',
+    customerEmail: booking.customer?.email || undefined,
+    successUrl,
+    cancelUrl,
+    description: `${booking.service?.name || 'Cleaning'} — ${booking.customer?.firstName || ''} ${booking.customer?.lastName || ''}`.trim(),
+  });
+
+  await prisma.booking.update({
+    where: { id: bookingId },
+    data: {
+      paymentNote: `stripe_session:${session.id}`,
+    },
+  });
+
+  await audit({
+    businessId,
+    actorUserId,
+    action: 'BOOKING_PAYMENT_LINK_CREATED',
+    entityType: 'Booking',
+    entityId: bookingId,
+    metadata: { sessionId: session.id, url: session.url },
+  });
+
+  return { url: session.url, sessionId: session.id };
+}
+
+module.exports.createPaymentLink = createPaymentLink;

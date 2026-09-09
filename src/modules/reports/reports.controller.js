@@ -37,4 +37,21 @@ async function cleanerPerf(req, res, next) {
   }
 }
 
-module.exports = { list, kpis, revenue, cleanerPerf };
+async function auditTrail(req, res, next) {
+  try {
+    const data = await service.auditTrail(req.businessId, {
+      page: req.query.page,
+      limit: req.query.limit,
+      from: req.query.from,
+      to: req.query.to,
+      userId: req.query.userId,
+      resource: req.query.resource,
+      action: req.query.action,
+    });
+    return success(res, 200, data);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { list, kpis, revenue, cleanerPerf, auditTrail };

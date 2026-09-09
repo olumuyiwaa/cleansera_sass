@@ -115,6 +115,8 @@ model Business {
   coupons            Coupon[]
   auditLogs          AuditLog[]
   ChecklistTemplate  ChecklistTemplate[]
+  supportTickets     SupportTicket[]
+  cleanerDocuments   CleanerDocument[]
 
   @@index([subdomain])
 }
@@ -300,6 +302,7 @@ model CleanerProfile {
 
   availability CleanerAvailability[]
   assignments  BookingAssignment[]
+  documents    CleanerDocument[]
 
   @@index([businessId])
   @@index([businessId, status])
@@ -383,8 +386,8 @@ model Service {
   isActive         Boolean      @default(true)
   createdAt        DateTime     @default(now())
 
-  addOns   ServiceAddOn[]
-  bookings Booking[]
+  addOns             ServiceAddOn[]
+  bookings           Booking[]
   recurringSchedules RecurringSchedule[]
 
   @@index([businessId])
@@ -421,21 +424,21 @@ enum RecurrenceFrequency {
 }
 
 model RecurringSchedule {
-  id          String              @id @default(cuid())
-  businessId  String
-  business    Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  customerId  String
-  customer    Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  serviceId   String
-  service     Service             @relation(fields: [serviceId], references: [id])
+  id                String              @id @default(cuid())
+  businessId        String
+  business          Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customerId        String
+  customer          Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  serviceId         String
+  service           Service             @relation(fields: [serviceId], references: [id])
   customerAddressId String?
-  customerAddress   CustomerAddress? @relation(fields: [customerAddressId], references: [id])
-  frequency   RecurrenceFrequency
-  dayOfWeek   Int
-  startTime   String
-  isActive    Boolean             @default(true)
-  nextRunDate DateTime
-  createdAt   DateTime            @default(now())
+  customerAddress   CustomerAddress?    @relation(fields: [customerAddressId], references: [id])
+  frequency         RecurrenceFrequency
+  dayOfWeek         Int
+  startTime         String
+  isActive          Boolean             @default(true)
+  nextRunDate       DateTime
+  createdAt         DateTime            @default(now())
 
   bookings Booking[]
 
@@ -476,15 +479,15 @@ model Booking {
   photos      JobPhoto[]
   review      Review?
 
-  @@index([businessId])
-  @@index([businessId, status])
-  @@index([businessId, scheduledStart])
   // Prevents the recurring daemon from double-creating a booking for the
   // same schedule + slot if it runs twice (two replicas, a retried tick,
   // etc). recurringScheduleId is null for one-off bookings, and Postgres
   // allows multiple NULLs through a unique index, so this only constrains
   // actual recurring-generated bookings.
   @@unique([recurringScheduleId, scheduledStart])
+  @@index([businessId])
+  @@index([businessId, status])
+  @@index([businessId, scheduledStart])
 }
 
 model BookingAssignment {
@@ -623,4 +626,92 @@ model AuditLog {
   createdAt   DateTime  @default(now())
 
   @@index([businessId])
+}
+
+// ============================================================
+// CLEANER DOCUMENTS
+// ============================================================
+
+enum DocumentType {
+  ID_CARD
+  BACKGROUND_CHECK
+  CERTIFICATION
+  CONTRACT
+  INSURANCE
+  OTHER
+}
+
+model CleanerDocument {
+  id         String         @id @default(cuid())
+  businessId String
+  business   Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  cleanerId  String
+  cleaner    CleanerProfile @relation(fields: [cleanerId], references: [id], onDelete: Cascade)
+  type       DocumentType   @default(OTHER)
+  title      String
+  storageKey String
+  mimeType   String?
+  fileSize   Int?
+  expiresAt  DateTime?
+  notes      String?
+  uploadedBy String?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  @@index([businessId])
+  @@index([cleanerId])
+}
+
+// ============================================================
+// SUPPORT TICKETS
+// ============================================================
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_ON_CUSTOMER
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model SupportTicket {
+  id          String         @id @default(cuid())
+  businessId  String
+  business    Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  subject     String
+  description String
+  status      TicketStatus   @default(OPEN)
+  priority    TicketPriority @default(MEDIUM)
+  category    String?
+  customerId  String?
+  bookingId   String?
+  assignedTo  String?
+  createdBy   String?
+  resolvedAt  DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  messages SupportTicketMessage[]
+
+  @@index([businessId])
+  @@index([businessId, status])
+}
+
+model SupportTicketMessage {
+  id         String        @id @default(cuid())
+  ticketId   String
+  ticket     SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId   String?
+  body       String
+  isInternal Boolean       @default(false)
+  createdAt  DateTime      @default(now())
+
+  @@index([ticketId])
 }

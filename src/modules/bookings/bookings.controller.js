@@ -127,3 +127,29 @@ async function updatePayment(req, res, next) {
 module.exports.cancel = cancel;
 module.exports.reschedule = reschedule;
 module.exports.updatePayment = updatePayment;
+
+async function createPaymentLink(req, res, next) {
+  try {
+    const result = await service.createPaymentLink(req.businessId, req.params.id, req.user.id, req.body);
+    return success(res, 200, result, 'Payment link created');
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports.createPaymentLink = createPaymentLink;
+
+async function pauseRecurring(req, res, next) {
+  try {
+    const data = await service.pauseRecurringSchedule(req.businessId, req.params.id, req.user.id);
+    return success(res, 200, data, 'Recurring schedule paused');
+  } catch (err) { next(err); }
+}
+async function resumeRecurring(req, res, next) {
+  try {
+    const data = await service.resumeRecurringSchedule(req.businessId, req.params.id, req.user.id);
+    return success(res, 200, data, 'Recurring schedule resumed');
+  } catch (err) { next(err); }
+}
+module.exports.pauseRecurring = pauseRecurring;
+module.exports.resumeRecurring = resumeRecurring;
