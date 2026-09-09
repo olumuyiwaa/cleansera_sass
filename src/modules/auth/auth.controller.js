@@ -108,6 +108,15 @@ async function disable2FA(req, res, next) {
   }
 }
 
+async function me(req, res, next) {
+  try {
+    const user = await authService.getCurrentUser(req.user);
+    return success(res, 200, user);
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports.requestPasswordReset = requestPasswordReset;
 module.exports.confirmPasswordReset = confirmPasswordReset;
 module.exports.requestEmailVerify = requestEmailVerify;
@@ -115,3 +124,4 @@ module.exports.confirmEmailVerify = confirmEmailVerify;
 module.exports.generate2FA = generate2FA;
 module.exports.verifyEnable2FA = verifyEnable2FA;
 module.exports.disable2FA = disable2FA;
+module.exports.me = me;

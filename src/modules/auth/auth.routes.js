@@ -44,5 +44,6 @@ router.post('/email/verify/confirm', authenticate, [body('code').notEmpty()], va
 router.post('/2fa/generate', authenticate, controller.generate2FA);
 router.post('/2fa/verify-enable', authenticate, [body('token').notEmpty()], validate, controller.verifyEnable2FA);
 router.post('/2fa/disable', authenticate, controller.disable2FA);
+router.get('/me', authenticate, controller.me);
 
 module.exports = router;

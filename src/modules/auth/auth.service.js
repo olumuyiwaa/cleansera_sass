@@ -213,6 +213,42 @@ async function disable2FA(userId) {
   await prisma.user.update({ where: { id: userId }, data: { twoFactorEnabled: false, twoFactorSecret: null } });
 }
 
+/**
+ * Assembles the `/auth/me` payload from the identity authenticate() already
+ * resolved (req.user: id, globalRole, businessId, businessRole,
+ * cleanerProfileId) plus the public User fields and, if applicable, the
+ * business summary the frontend's CurrentUser type expects.
+ */
+async function getCurrentUser({ id, globalRole, businessId, businessRole }) {
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      email: true,
+      phone: true,
+      firstName: true,
+      lastName: true,
+      isEmailVerified: true,
+      twoFactorEnabled: true,
+      createdAt: true,
+    },
+  });
+  if (!user) {
+    const err = new Error('User not found');
+    err.status = 404;
+    throw err;
+  }
+
+  const business = businessId
+    ? await prisma.business.findUnique({
+        where: { id: businessId },
+        select: { id: true, name: true, subdomain: true, timezone: true },
+      })
+    : null;
+
+  return { ...user, globalRole, businessId, businessRole, business };
+}
+
 module.exports.requestPasswordReset = requestPasswordReset;
 module.exports.confirmPasswordReset = confirmPasswordReset;
 module.exports.requestEmailVerify = requestEmailVerify;
@@ -220,3 +256,4 @@ module.exports.confirmEmailVerify = confirmEmailVerify;
 module.exports.generate2FASecret = generate2FASecret;
 module.exports.verifyAndEnable2FA = verifyAndEnable2FA;
 module.exports.disable2FA = disable2FA;
+module.exports.getCurrentUser = getCurrentUser;
