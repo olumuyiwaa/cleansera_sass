@@ -55,4 +55,4 @@ async function clockOut(req, res, next) {
   }
 }
 
-module.exports = { list, onboard, offboard, updateAvailability };
+module.exports = { list, onboard, offboard, updateAvailability, clockIn, clockOut };

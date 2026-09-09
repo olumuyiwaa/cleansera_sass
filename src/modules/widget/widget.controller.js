@@ -37,4 +37,4 @@ async function submitBooking(req, res, next) {
   }
 }
 
-module.exports = { storefront, quote, submitBooking };
+module.exports = { storefront, quote, slots, submitBooking };

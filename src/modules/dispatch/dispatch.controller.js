@@ -53,4 +53,4 @@ async function suggestCleaners(req, res, next) {
   }
 }
 
-module.exports = { list, createAssignment, getAssignment, removeAssignment };
+module.exports = { list, createAssignment, getAssignment, removeAssignment, suggestCleaners };
