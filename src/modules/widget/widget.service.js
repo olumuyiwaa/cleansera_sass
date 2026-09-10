@@ -13,8 +13,22 @@ async function getStorefront(businessId) {
   return { business, services };
 }
 
-async function quote(businessId, { serviceId, addOnIds = [], latitude, longitude, scheduledStart, couponCode } = {}) {
-  const service = await prisma.service.findFirst({ where: { id: serviceId, businessId, isActive: true }, include: { addOns: true } });
+async function quote(businessId, {
+  serviceId,
+  addOnIds = [],
+  latitude,
+  longitude,
+  scheduledStart,
+  couponCode,
+  rooms,
+  bathrooms,
+  sqft,
+  frequency,
+} = {}) {
+  const service = await prisma.service.findFirst({
+    where: { id: serviceId, businessId, isActive: true },
+    include: { addOns: true },
+  });
   if (!service) {
     const err = new Error('Service not found');
     err.status = 404;
@@ -31,14 +45,25 @@ async function quote(businessId, { serviceId, addOnIds = [], latitude, longitude
   }
 
   const pricing = require('../../lib/pricing');
-  const quote = await pricing.calculateQuote(service, { businessId, addOnIds, scheduledStart, couponCode });
+  const quote = await pricing.calculateQuote(service, {
+    businessId,
+    addOnIds,
+    scheduledStart,
+    couponCode,
+    rooms,
+    bathrooms,
+    sqft,
+    frequency,
+  });
 
-  // optional availability check: if a scheduledStart is provided, validate at-quote time
   if (scheduledStart) {
     const start = new Date(scheduledStart);
     const end = new Date(start.getTime() + (quote.breakdown.estimatedMinutes || 60) * 60 * 1000);
     const scheduler = require('../../lib/scheduler');
-    const candidates = await scheduler.findAvailableCleaners(businessId, start, end, { lat: latitude, lng: longitude });
+    const candidates = await scheduler.findAvailableCleaners(businessId, start, end, {
+      lat: latitude,
+      lng: longitude,
+    });
     if (!candidates || candidates.length === 0) {
       const err = new Error('No cleaners available for the requested scheduledStart');
       err.status = 422;
@@ -46,7 +71,14 @@ async function quote(businessId, { serviceId, addOnIds = [], latitude, longitude
     }
   }
 
-  return { serviceId, addOnIds, priceCents: quote.priceCents, estimatedMinutes: quote.breakdown.estimatedMinutes, breakdown: quote.breakdown, coupon: quote.coupon };
+  return {
+    serviceId,
+    addOnIds,
+    priceCents: quote.priceCents,
+    estimatedMinutes: quote.breakdown.estimatedMinutes,
+    breakdown: quote.breakdown,
+    coupon: quote.coupon,
+  };
 }
 
 /**
