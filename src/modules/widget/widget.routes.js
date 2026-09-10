@@ -20,7 +20,7 @@ const bookingValidators = [
 
 /** Mounts the storefront/quote/slots/bookings endpoints behind whichever tenant-resolution middleware is passed in. */
 function widgetRoutesFor(resolveBusiness) {
-  const router = express.Router();
+  const router = express.Router({ mergeParams: true });
   router.use(widgetLimiter, resolveBusiness);
 
   router.get('/storefront', controller.storefront);
