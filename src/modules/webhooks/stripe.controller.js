@@ -17,19 +17,48 @@ async function handle(req, res) {
   try {
     if (type === 'invoice.payment_succeeded') {
       const stripeSubId = obj.subscription;
-      await prisma.businessSubscription.updateMany({
-        where: { stripeSubscriptionId: stripeSubId },
-        data: {
-          status: 'ACTIVE',
-          currentPeriodEnd: new Date(obj.lines.data[0].period.end * 1000),
-        },
-      });
+      const subscription = await prisma.businessSubscription.findFirst({ where: { stripeSubscriptionId: stripeSubId } });
+      if (subscription) {
+        await prisma.businessSubscription.update({
+          where: { id: subscription.id },
+          data: {
+            status: 'ACTIVE',
+            currentPeriodEnd: new Date(obj.lines.data[0].period.end * 1000),
+          },
+        });
+        // Keep a billing-history record for the business — previously this
+        // model was defined in the schema but nothing ever wrote to it, so
+        // businesses had no invoice history for what they pay CleanSera.
+        await prisma.platformInvoice.upsert({
+          where: { stripeInvoiceId: obj.id },
+          create: {
+            subscriptionId: subscription.id,
+            stripeInvoiceId: obj.id,
+            amountCents: obj.amount_paid,
+            status: 'paid',
+            issuedAt: new Date(obj.created * 1000),
+            paidAt: new Date(),
+          },
+          update: { status: 'paid', paidAt: new Date(), amountCents: obj.amount_paid },
+        });
+      }
     } else if (type === 'invoice.payment_failed') {
       const stripeSubId = obj.subscription;
-      await prisma.businessSubscription.updateMany({
-        where: { stripeSubscriptionId: stripeSubId },
-        data: { status: 'PAST_DUE' },
-      });
+      const subscription = await prisma.businessSubscription.findFirst({ where: { stripeSubscriptionId: stripeSubId } });
+      if (subscription) {
+        await prisma.businessSubscription.update({ where: { id: subscription.id }, data: { status: 'PAST_DUE' } });
+        await prisma.platformInvoice.upsert({
+          where: { stripeInvoiceId: obj.id },
+          create: {
+            subscriptionId: subscription.id,
+            stripeInvoiceId: obj.id,
+            amountCents: obj.amount_due,
+            status: 'open',
+            issuedAt: new Date(obj.created * 1000),
+          },
+          update: { status: 'open' },
+        });
+      }
     } else if (type === 'customer.subscription.deleted') {
       const stripeSubId = obj.id;
       await prisma.businessSubscription.updateMany({

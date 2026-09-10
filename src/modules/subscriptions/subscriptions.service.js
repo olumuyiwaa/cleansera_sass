@@ -77,4 +77,13 @@ async function cancelSubscriptionForBusiness(businessId) {
   return prisma.businessSubscription.update({ where: { id: sub.id }, data: { status: 'CANCELED', canceledAt: new Date() } });
 }
 
-module.exports = { getSubscriptionForBusiness, createSubscriptionForBusiness, updateSubscriptionForBusiness, cancelSubscriptionForBusiness };
+async function listInvoicesForBusiness(businessId) {
+  const sub = await getSubscriptionForBusiness(businessId);
+  if (!sub) return [];
+  return prisma.platformInvoice.findMany({
+    where: { subscriptionId: sub.id },
+    orderBy: { issuedAt: 'desc' },
+  });
+}
+
+module.exports = { getSubscriptionForBusiness, createSubscriptionForBusiness, updateSubscriptionForBusiness, cancelSubscriptionForBusiness, listInvoicesForBusiness };

@@ -13,5 +13,6 @@ router.get('/', controller.getSubscription);
 router.post('/', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), [body('planId').notEmpty()], validate, controller.createSubscription);
 router.put('/', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.updateSubscription);
 router.post('/cancel', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.cancelSubscription);
+router.get('/invoices', controller.listInvoices);
 
 module.exports = router;

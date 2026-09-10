@@ -11,18 +11,21 @@ const app = express();
 
 app.use(helmet());
 app.use(
-  cors({
-    origin: true, // reflects request origin — needed since widget requests come from arbitrary business domains
-    credentials: true,
-  })
+    cors({
+        origin: true, // reflects request origin — needed since widget requests come from arbitrary business domains
+        // Auth is Bearer-token only (no cookies are ever set), so credentials
+        // aren't needed here — leaving this on combined with a reflected origin
+        // widened the attack surface for no reason.
+        credentials: false,
+    })
 );
 // Stripe requires the raw, unparsed body for webhook signature verification.
 // This MUST be registered before express.json() below — once express.json()
 // runs on a request, the stream is consumed and Stripe's signature check
 // against bodyParser.raw() will always fail.
 app.post('/api/v1/webhooks/stripe', bodyParser.raw({ type: 'application/json' }), (req, res, next) => {
-  req.rawBody = req.body;
-  return stripeWebhookController.handle(req, res, next);
+    req.rawBody = req.body;
+    return stripeWebhookController.handle(req, res, next);
 });
 
 app.use(express.json({ limit: '2mb' }));

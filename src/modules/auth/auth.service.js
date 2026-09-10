@@ -70,7 +70,7 @@ async function registerBusiness({ businessName, subdomain, firstName, lastName, 
   return issueSession(result.user.id, result.business.id);
 }
 
-async function login({ email, password, userAgent, ipAddress }) {
+async function login({ email, password, twoFactorCode, userAgent, ipAddress }) {
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
     const err = new Error('Invalid email or password');
@@ -83,12 +83,37 @@ async function login({ email, password, userAgent, ipAddress }) {
     throw err;
   }
 
+  // 2FA was previously enable-able but never actually checked at sign-in —
+  // a user could turn it on and it changed nothing about login. Enforce it
+  // here: if enabled, a valid TOTP code is required before a session is
+  // issued.
+  if (user.twoFactorEnabled) {
+    if (!twoFactorCode) {
+      const err = new Error('Two-factor authentication code required');
+      err.status = 401;
+      err.errors = { code: 'TWO_FACTOR_REQUIRED' };
+      throw err;
+    }
+    const ok = speakeasy.totp.verify({
+      secret: user.twoFactorSecret,
+      encoding: 'base32',
+      token: twoFactorCode,
+      window: 1,
+    });
+    if (!ok) {
+      const err = new Error('Invalid two-factor authentication code');
+      err.status = 401;
+      err.errors = { code: 'TWO_FACTOR_INVALID' };
+      throw err;
+    }
+  }
+
   // A user may belong to exactly one business as staff, or hold a cleaner
   // profile — resolve whichever applies so the token carries a businessId.
   const membership = await prisma.businessMember.findFirst({ where: { userId: user.id, isActive: true } });
   const cleanerProfile = membership
-    ? null
-    : await prisma.cleanerProfile.findFirst({ where: { userId: user.id, status: 'ACTIVE' } });
+      ? null
+      : await prisma.cleanerProfile.findFirst({ where: { userId: user.id, status: 'ACTIVE' } });
 
   const businessId = membership?.businessId || cleanerProfile?.businessId || null;
 
@@ -124,8 +149,8 @@ async function refresh(refreshToken) {
 
   const membership = await prisma.businessMember.findFirst({ where: { userId: session.userId, isActive: true } });
   const cleanerProfile = membership
-    ? null
-    : await prisma.cleanerProfile.findFirst({ where: { userId: session.userId, status: 'ACTIVE' } });
+      ? null
+      : await prisma.cleanerProfile.findFirst({ where: { userId: session.userId, status: 'ACTIVE' } });
   const businessId = membership?.businessId || cleanerProfile?.businessId || null;
 
   return issueSession(session.userId, businessId);
@@ -159,6 +184,10 @@ async function confirmPasswordReset(token, newPassword) {
   const hash = await bcrypt.hash(newPassword, 12);
   await prisma.user.update({ where: { id: pr.userId }, data: { passwordHash: hash } });
   await prisma.passwordReset.update({ where: { id: pr.id }, data: { usedAt: new Date() } });
+  // A password reset should invalidate every existing session — otherwise a
+  // session opened before a compromise (the likely reason for the reset)
+  // just survives it.
+  await prisma.session.deleteMany({ where: { userId: pr.userId } });
   await audit({ businessId: null, actorUserId: pr.userId, action: 'PASSWORD_RESET', entityType: 'User', entityId: pr.userId });
 }
 
@@ -240,11 +269,11 @@ async function getCurrentUser({ id, globalRole, businessId, businessRole }) {
   }
 
   const business = businessId
-    ? await prisma.business.findUnique({
+      ? await prisma.business.findUnique({
         where: { id: businessId },
         select: { id: true, name: true, subdomain: true, timezone: true },
       })
-    : null;
+      : null;
 
   return { ...user, globalRole, businessId, businessRole, business };
 }

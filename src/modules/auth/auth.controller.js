@@ -14,6 +14,7 @@ async function login(req, res, next) {
   try {
     const tokens = await authService.login({
       ...req.body,
+      twoFactorCode: req.body.twoFactorCode,
       userAgent: req.headers['user-agent'],
       ipAddress: req.ip,
     });

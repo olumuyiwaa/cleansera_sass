@@ -37,4 +37,13 @@ async function cancelSubscription(req, res, next) {
   }
 }
 
-module.exports = { getSubscription, updateSubscription, createSubscription, cancelSubscription };
+async function listInvoices(req, res, next) {
+  try {
+    const invoices = await service.listInvoicesForBusiness(req.businessId);
+    return success(res, 200, invoices);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { getSubscription, updateSubscription, createSubscription, cancelSubscription, listInvoices };

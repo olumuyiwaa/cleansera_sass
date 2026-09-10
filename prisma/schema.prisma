@@ -471,6 +471,7 @@ model Booking {
   paymentStatus       String             @default("UNPAID") // UNPAID | PAID | PARTIAL
   paymentNote         String?
   cancelReason        String?
+  reminderSentAt      DateTime?
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
 

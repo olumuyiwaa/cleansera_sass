@@ -10,7 +10,7 @@ function errorHandler(err, req, res, next) {
 
   const status = err.status || 500;
   const message = status === 500 ? 'Internal server error' : err.message;
-  return error(res, status, message);
+  return error(res, status, message, err.errors || null);
 }
 
 module.exports = errorHandler;

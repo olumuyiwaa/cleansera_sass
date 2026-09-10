@@ -114,8 +114,22 @@ async function assignBooking(businessId, bookingId, cleanerId, actorUserId) {
     throw err;
   }
 
-  // Prevent overlapping assignments for the cleaner
-  const overlap = await prisma.bookingAssignment.findFirst({ where: { cleanerId, booking: { scheduledStart: { lte: booking.scheduledEnd }, scheduledEnd: { gte: booking.scheduledStart } } }, include: { booking: true } });
+  // Prevent overlapping assignments for the cleaner. Excludes CANCELLED
+  // bookings — otherwise a cancelled booking permanently "blocks" that
+  // cleaner's slot for reassignment, since its BookingAssignment row is
+  // never removed on cancel (matches the exclusion rescheduleBooking's own
+  // overlap check already applies below).
+  const overlap = await prisma.bookingAssignment.findFirst({
+    where: {
+      cleanerId,
+      booking: {
+        status: { not: 'CANCELLED' },
+        scheduledStart: { lte: booking.scheduledEnd },
+        scheduledEnd: { gte: booking.scheduledStart },
+      },
+    },
+    include: { booking: true },
+  });
   if (overlap) {
     const err = new Error('Cleaner has another booking during this time');
     err.status = 400;

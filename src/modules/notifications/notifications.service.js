@@ -104,21 +104,21 @@ async function notifyMembers(businessId, type, title, body, extraEmit) {
 
 async function notifyBookingCancelled(businessId, booking) {
   return notifyMembers(
-    businessId,
-    'BOOKING_CANCELLED',
-    'Booking cancelled',
-    `Booking ${booking.id} scheduled for ${booking.scheduledStart} was cancelled.`,
-    { event: 'booking_cancelled', payload: { booking } }
+      businessId,
+      'BOOKING_CANCELLED',
+      'Booking cancelled',
+      `Booking ${booking.id} scheduled for ${booking.scheduledStart} was cancelled.`,
+      { event: 'booking_cancelled', payload: { booking } }
   );
 }
 
 async function notifyBookingRescheduled(businessId, booking) {
   return notifyMembers(
-    businessId,
-    'BOOKING_RESCHEDULED',
-    'Booking rescheduled',
-    `Booking ${booking.id} moved to ${booking.scheduledStart}.`,
-    { event: 'booking_rescheduled', payload: { booking } }
+      businessId,
+      'BOOKING_RESCHEDULED',
+      'Booking rescheduled',
+      `Booking ${booking.id} moved to ${booking.scheduledStart}.`,
+      { event: 'booking_rescheduled', payload: { booking } }
   );
 }
 
@@ -135,6 +135,26 @@ async function requestReview(businessId, booking, customer) {
   return notifyMembers(businessId, 'REVIEW_REQUESTED', 'Review requested', `Review request sent for booking ${booking.id}`);
 }
 
+async function sendBookingReminder(businessId, booking, customer) {
+  const title = 'Upcoming cleaning reminder';
+  const text = `Hi ${customer?.firstName || ''}, this is a reminder that your cleaning is scheduled for ${booking.scheduledStart}.`;
+  try {
+    if (customer?.email) await notificationClient.sendEmail({ to: customer.email, subject: title, text });
+    if (customer?.phone) await notificationClient.sendSms({ to: customer.phone, body: text });
+  } catch (e) {
+    logger.error('failed to send customer reminder', e);
+  }
+  // also let business members know a reminder went out, distinct from the
+  // original BOOKING_REQUESTED notification
+  return notifyMembers(
+      businessId,
+      'REMINDER',
+      'Reminder sent',
+      `Reminder sent for booking ${booking.id}, scheduled ${booking.scheduledStart}.`
+  );
+}
+
+module.exports.sendBookingReminder = sendBookingReminder;
 module.exports.notifyBookingCancelled = notifyBookingCancelled;
 module.exports.notifyBookingRescheduled = notifyBookingRescheduled;
 module.exports.requestReview = requestReview;
