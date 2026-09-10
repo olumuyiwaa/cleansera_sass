@@ -35,6 +35,30 @@ The codebase has progressed beyond initial scaffolding. Recent work implemented 
 
 Remaining work items include richer pricing rules (business-configurable frequency discounts, coupons), advanced dispatch/routing (ETA via Distance Matrix), end-to-end recurring logic, customer portal features, and comprehensive reporting endpoints.
 
+## Stripe Connect (job-level payments)
+
+Two separate Stripe integrations exist and should not be confused:
+
+1. **Platform subscription billing** (`subscriptions` module) — CleanSera charges each business for their CleanSera plan (Starter/Growth/Pro). Unaffected by anything below.
+2. **Job-level payments** (`businesses` Connect endpoints + `bookings.createPaymentLink`) — a business's *own customers* paying for a cleaning job. As of this change, these funds are routed directly to the business via a Stripe Connect **destination charge**: CleanSera's platform account never holds the money, it only optionally collects `PLATFORM_APPLICATION_FEE_BPS` as an application fee on top.
+
+Flow:
+
+- `GET /businesses/stripe-connect/status` — returns `{ connected, onboarded, chargesEnabled, payoutsEnabled, readyForPayments }` for the current business.
+- `POST /businesses/stripe-connect/onboard` — creates (or reuses) a Stripe Express connected account for the business and returns a hosted onboarding URL to redirect the business owner to.
+- `POST /businesses/stripe-connect/refresh` — re-pulls account status from Stripe; use this on the `return_url` landing page in case the `account.updated` webhook hasn't arrived yet.
+- `bookings.createPaymentLink` now **refuses** (`402`) to create a checkout session until `stripeChargesEnabled` is true for the business — a business can't accidentally take job payments into an unverified/unconnected account.
+
+**Required Stripe Dashboard setup**: in addition to the existing webhook events, subscribe the webhook endpoint to `account.updated` (this is how the platform learns a connected account finished onboarding and can accept charges).
+
+**Required migration**: `prisma/schema.prisma` gained `stripeConnectedAccountId`, `stripeConnectOnboarded`, `stripeChargesEnabled`, `stripePayoutsEnabled` on `Business`. Run:
+
+```bash
+npx prisma migrate dev --name add_stripe_connect_fields
+```
+
+**Not yet done** (next step, not included in this pass): a dashboard UI card in Business Settings that calls these three endpoints and shows connect status — see the frontend repo's gap notes.
+
 ## Setup
 
 ```bash

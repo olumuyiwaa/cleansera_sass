@@ -97,6 +97,16 @@ model Business {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  // Stripe Connect — required before this business can accept job-level
+  // customer payments through CleanSera. Money for a paid booking is
+  // transferred to this connected account (minus the platform fee), never
+  // held in CleanSera's own Stripe balance. Subscription billing
+  // (BusinessSubscription below) is unrelated and unaffected by this.
+  stripeConnectedAccountId String?  @unique
+  stripeConnectOnboarded   Boolean  @default(false)
+  stripeChargesEnabled     Boolean  @default(false)
+  stripePayoutsEnabled     Boolean  @default(false)
+
   branding           BusinessBranding?
   addresses          BusinessAddress[]
   serviceAreas       ServiceArea[]

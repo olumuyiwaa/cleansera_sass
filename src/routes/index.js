@@ -25,7 +25,12 @@ router.use('/support-tickets', require('../modules/supportTickets/supportTickets
 router.use('/cleaner-documents', require('../modules/cleanerDocuments/cleanerDocuments.routes'));
 
 // Public booking widget (unauthenticated, resolved from Host header)
-router.use('/widget', require('../modules/widget/widget.routes'));
+const widgetRoutes = require('../modules/widget/widget.routes');
+router.use('/widget', widgetRoutes);
+
+// Public booking widget, slug-resolved — no custom-domain/DNS setup
+// required. Same endpoints, mounted per-business at /widget-embed/:subdomain.
+router.use('/widget-embed/:subdomain', widgetRoutes.slugRouter);
 router.use('/portal', require('../modules/customerPortal/customerPortal.routes'));
 router.use('/demo-requests', require('../modules/demoRequests/demoRequests.routes'));
 router.use('/support', require('../modules/supportContact/supportContact.routes'));

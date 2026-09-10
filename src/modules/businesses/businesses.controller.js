@@ -27,6 +27,33 @@ async function getBranding(req, res, next) {
   }
 }
 
+async function getStripeConnectStatus(req, res, next) {
+  try {
+    const s = await service.getStripeConnectStatus(req.businessId);
+    return success(res, 200, s);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function startStripeConnectOnboarding(req, res, next) {
+  try {
+    const s = await service.startStripeConnectOnboarding(req.businessId, req.body || {});
+    return success(res, 200, s);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function refreshStripeConnectStatus(req, res, next) {
+  try {
+    const s = await service.refreshStripeConnectStatus(req.businessId);
+    return success(res, 200, s, 'Stripe Connect status refreshed');
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function updateBranding(req, res, next) {
   try {
     const b = await service.updateBranding(req.businessId, req.body);
@@ -117,4 +144,4 @@ async function updateHours(req, res, next) {
   }
 }
 
-module.exports = { list, update, getBranding, updateBranding, addAddress, updateAddress, removeAddress, listServiceAreas, createServiceArea, updateServiceArea, deleteServiceArea, listHours, updateHours };
+module.exports = { list, update, getBranding, updateBranding, addAddress, updateAddress, removeAddress, listServiceAreas, createServiceArea, updateServiceArea, deleteServiceArea, listHours, updateHours, getStripeConnectStatus, startStripeConnectOnboarding, refreshStripeConnectStatus };

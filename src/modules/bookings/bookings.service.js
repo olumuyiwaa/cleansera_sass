@@ -200,7 +200,11 @@ async function createRecurringSchedule(businessId, actorUserId, payload) {
 }
 
 async function listRecurringSchedules(businessId) {
-  return prisma.recurringSchedule.findMany({ where: { businessId }, orderBy: { createdAt: 'desc' } });
+  return prisma.recurringSchedule.findMany({
+    where: { businessId },
+    include: { customer: true, service: true },
+    orderBy: { createdAt: 'desc' },
+  });
 }
 
 async function cancelRecurringSchedule(businessId, id, actorUserId) {
@@ -371,9 +375,22 @@ async function createPaymentLink(businessId, bookingId, actorUserId, { successUr
     throw err;
   }
 
+  const business = await prisma.business.findUnique({
+    where: { id: businessId },
+    select: { stripeConnectedAccountId: true, stripeChargesEnabled: true },
+  });
+  if (!business?.stripeChargesEnabled || !business?.stripeConnectedAccountId) {
+    const err = new Error(
+      'This business has not finished setting up Stripe Connect, so it cannot accept card payments for bookings yet. Complete Stripe onboarding in Business Settings.'
+    );
+    err.status = 402;
+    throw err;
+  }
+
   const session = await createBookingCheckoutSession({
     bookingId: booking.id,
     businessId,
+    connectedAccountId: business.stripeConnectedAccountId,
     amountCents: booking.quotedPriceCents,
     currency: currency || process.env.DEFAULT_CURRENCY || 'ngn',
     customerEmail: booking.customer?.email || undefined,

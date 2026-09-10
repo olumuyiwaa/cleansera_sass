@@ -23,6 +23,63 @@ async function getBranding(businessId) {
   return prisma.businessBranding.findUnique({ where: { businessId } });
 }
 
+async function getStripeConnectStatus(businessId) {
+  const b = await prisma.business.findUnique({
+    where: { id: businessId },
+    select: {
+      stripeConnectedAccountId: true,
+      stripeConnectOnboarded: true,
+      stripeChargesEnabled: true,
+      stripePayoutsEnabled: true,
+    },
+  });
+  if (!b) {
+    const err = new Error('Business not found');
+    err.status = 404;
+    throw err;
+  }
+  return {
+    connected: !!b.stripeConnectedAccountId,
+    onboarded: b.stripeConnectOnboarded,
+    chargesEnabled: b.stripeChargesEnabled,
+    payoutsEnabled: b.stripePayoutsEnabled,
+    // true only once Stripe has actually confirmed the account can take
+    // charges — this, not `connected`, is what should gate the "share your
+    // booking link" call to action in the dashboard.
+    readyForPayments: b.stripeChargesEnabled,
+  };
+}
+
+async function startStripeConnectOnboarding(businessId, { refreshUrl, returnUrl } = {}) {
+  const { createConnectAccountAndLink } = require('../../lib/stripeClient');
+  const business = await prisma.business.findUnique({ where: { id: businessId } });
+  if (!business) {
+    const err = new Error('Business not found');
+    err.status = 404;
+    throw err;
+  }
+  return createConnectAccountAndLink(business, { refreshUrl, returnUrl });
+}
+
+async function refreshStripeConnectStatus(businessId) {
+  const { getConnectAccountStatus } = require('../../lib/stripeClient');
+  const business = await prisma.business.findUnique({ where: { id: businessId } });
+  if (!business || !business.stripeConnectedAccountId) {
+    const err = new Error('Business has not started Stripe Connect onboarding');
+    err.status = 409;
+    throw err;
+  }
+  const status = await getConnectAccountStatus(business.stripeConnectedAccountId);
+  return prisma.business.update({
+    where: { id: businessId },
+    data: {
+      stripeChargesEnabled: status.chargesEnabled,
+      stripePayoutsEnabled: status.payoutsEnabled,
+      stripeConnectOnboarded: status.detailsSubmitted,
+    },
+  });
+}
+
 async function updateBranding(businessId, payload) {
   const existing = await prisma.businessBranding.findUnique({ where: { businessId } });
   if (existing) {

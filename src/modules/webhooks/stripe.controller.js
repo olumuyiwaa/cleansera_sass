@@ -96,6 +96,22 @@ async function handle(req, res) {
           logger.info(`Booking ${meta.bookingId} marked PAID via Checkout Session ${obj.id}`);
         }
       }
+    } else if (type === 'account.updated') {
+      // Fires as a connected business completes/updates their Stripe Connect
+      // onboarding (KYC, bank details, etc). This is the authoritative way
+      // to learn charges_enabled flipped true — don't rely on the frontend
+      // redirect alone, since the user can close the tab mid-flow.
+      const business = await prisma.business.findFirst({ where: { stripeConnectedAccountId: obj.id } });
+      if (business) {
+        await prisma.business.update({
+          where: { id: business.id },
+          data: {
+            stripeChargesEnabled: !!obj.charges_enabled,
+            stripePayoutsEnabled: !!obj.payouts_enabled,
+            stripeConnectOnboarded: !!obj.details_submitted,
+          },
+        });
+      }
     }
   } catch (e) {
     logger.error('error handling stripe webhook', e);

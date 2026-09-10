@@ -13,6 +13,12 @@ router.put('/', controller.update);
 router.get('/branding', controller.getBranding);
 router.put('/branding', controller.updateBranding);
 
+// Stripe Connect — onboarding a business to receive job-level customer
+// payments directly. Distinct from the platform's own subscription billing.
+router.get('/stripe-connect/status', controller.getStripeConnectStatus);
+router.post('/stripe-connect/onboard', controller.startStripeConnectOnboarding);
+router.post('/stripe-connect/refresh', controller.refreshStripeConnectStatus);
+
 router.post('/addresses', controller.addAddress);
 router.put('/addresses/:id', controller.updateAddress);
 router.delete('/addresses/:id', controller.removeAddress);
