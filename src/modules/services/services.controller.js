@@ -46,4 +46,31 @@ async function remove(req, res, next) {
   }
 }
 
-module.exports = { list, create, get, update, remove };
+async function createAddOn(req, res, next) {
+  try {
+    const addOn = await service.addAddOn(req.businessId, req.params.id, req.body);
+    return success(res, 201, addOn, 'Add-on created');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updateAddOn(req, res, next) {
+  try {
+    const addOn = await service.updateAddOn(req.businessId, req.params.id, req.params.addOnId, req.body);
+    return success(res, 200, addOn, 'Add-on updated');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function removeAddOn(req, res, next) {
+  try {
+    await service.deleteAddOn(req.businessId, req.params.id, req.params.addOnId);
+    return success(res, 200, null, 'Add-on deleted');
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { list, create, get, update, remove, createAddOn, updateAddOn, removeAddOn };

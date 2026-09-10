@@ -28,5 +28,6 @@ router.use('/cleaner-documents', require('../modules/cleanerDocuments/cleanerDoc
 router.use('/widget', require('../modules/widget/widget.routes'));
 router.use('/portal', require('../modules/customerPortal/customerPortal.routes'));
 router.use('/demo-requests', require('../modules/demoRequests/demoRequests.routes'));
+router.use('/support', require('../modules/supportContact/supportContact.routes'));
 
 module.exports = router;

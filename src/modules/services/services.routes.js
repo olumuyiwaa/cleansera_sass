@@ -21,4 +21,14 @@ router.get('/:id', controller.get);
 router.put('/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.update);
 router.delete('/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.remove);
 
+router.post(
+	'/:id/addons',
+	requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'),
+	[body('name').notEmpty(), body('priceCents').optional().isInt(), body('extraMinutes').optional().isInt()],
+	validate,
+	controller.createAddOn
+);
+router.put('/:id/addons/:addOnId', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.updateAddOn);
+router.delete('/:id/addons/:addOnId', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.removeAddOn);
+
 module.exports = router;
