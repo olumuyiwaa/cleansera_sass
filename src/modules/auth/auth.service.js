@@ -8,7 +8,6 @@ const REFRESH_TTL_DAYS = 30;
 const { v4: uuidv4 } = require('uuid');
 const notificationClient = require('../../lib/notificationClient');
 const speakeasy = require('speakeasy');
-const prismaRaw = prisma; // keep naming
 
 /**
  * Registers a new cleaning business and its owner in one transaction.
@@ -83,10 +82,6 @@ async function login({ email, password, twoFactorCode, userAgent, ipAddress }) {
     throw err;
   }
 
-  // 2FA was previously enable-able but never actually checked at sign-in —
-  // a user could turn it on and it changed nothing about login. Enforce it
-  // here: if enabled, a valid TOTP code is required before a session is
-  // issued.
   if (user.twoFactorEnabled) {
     if (!twoFactorCode) {
       const err = new Error('Two-factor authentication code required');
@@ -108,12 +103,14 @@ async function login({ email, password, twoFactorCode, userAgent, ipAddress }) {
     }
   }
 
-  // A user may belong to exactly one business as staff, or hold a cleaner
-  // profile — resolve whichever applies so the token carries a businessId.
-  const membership = await prisma.businessMember.findFirst({ where: { userId: user.id, isActive: true } });
+  const membership = await prisma.businessMember.findFirst({
+    where: { userId: user.id, isActive: true },
+  });
   const cleanerProfile = membership
       ? null
-      : await prisma.cleanerProfile.findFirst({ where: { userId: user.id, status: 'ACTIVE' } });
+      : await prisma.cleanerProfile.findFirst({
+        where: { userId: user.id, status: 'ACTIVE' },
+      });
 
   const businessId = membership?.businessId || cleanerProfile?.businessId || null;
 
@@ -145,12 +142,16 @@ async function refresh(refreshToken) {
     throw err;
   }
 
-  await prisma.session.delete({ where: { id: session.id } }); // rotate
+  await prisma.session.delete({ where: { id: session.id } });
 
-  const membership = await prisma.businessMember.findFirst({ where: { userId: session.userId, isActive: true } });
+  const membership = await prisma.businessMember.findFirst({
+    where: { userId: session.userId, isActive: true },
+  });
   const cleanerProfile = membership
       ? null
-      : await prisma.cleanerProfile.findFirst({ where: { userId: session.userId, status: 'ACTIVE' } });
+      : await prisma.cleanerProfile.findFirst({
+        where: { userId: session.userId, status: 'ACTIVE' },
+      });
   const businessId = membership?.businessId || cleanerProfile?.businessId || null;
 
   return issueSession(session.userId, businessId);
@@ -160,22 +161,25 @@ async function logout(refreshToken) {
   await prisma.session.deleteMany({ where: { refreshToken } });
 }
 
-module.exports = { registerBusiness, login, refresh, logout };
-
-// ----------------------- Password reset / email verify / 2FA -----------------
-
 async function requestPasswordReset(email) {
   const user = await prisma.user.findUnique({ where: { email } });
-  if (!user) return; // don't leak
+  if (!user) return;
   const token = uuidv4();
-  const expiresAt = new Date(Date.now() + 1000 * 60 * 60); // 1 hour
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 60);
   await prisma.passwordReset.create({ data: { userId: user.id, token, expiresAt } });
   const resetUrl = `${process.env.APP_URL || 'https://app.cleansera.example'}/auth/password-reset/confirm?token=${token}`;
-  await notificationClient.sendEmail({ to: user.email, subject: 'Reset your password', text: `Reset link: ${resetUrl}` });
+  await notificationClient.sendEmail({
+    to: user.email,
+    subject: 'Reset your password',
+    text: `Reset link: ${resetUrl}`,
+  });
 }
 
 async function confirmPasswordReset(token, newPassword) {
-  const pr = await prisma.passwordReset.findUnique({ where: { token }, include: { user: true } });
+  const pr = await prisma.passwordReset.findUnique({
+    where: { token },
+    include: { user: true },
+  });
   if (!pr || pr.usedAt || pr.expiresAt < new Date()) {
     const err = new Error('Invalid or expired token');
     err.status = 400;
@@ -184,11 +188,14 @@ async function confirmPasswordReset(token, newPassword) {
   const hash = await bcrypt.hash(newPassword, 12);
   await prisma.user.update({ where: { id: pr.userId }, data: { passwordHash: hash } });
   await prisma.passwordReset.update({ where: { id: pr.id }, data: { usedAt: new Date() } });
-  // A password reset should invalidate every existing session — otherwise a
-  // session opened before a compromise (the likely reason for the reset)
-  // just survives it.
   await prisma.session.deleteMany({ where: { userId: pr.userId } });
-  await audit({ businessId: null, actorUserId: pr.userId, action: 'PASSWORD_RESET', entityType: 'User', entityId: pr.userId });
+  await audit({
+    businessId: null,
+    actorUserId: pr.userId,
+    action: 'PASSWORD_RESET',
+    entityType: 'User',
+    entityId: pr.userId,
+  });
 }
 
 async function requestEmailVerify(userId) {
@@ -200,12 +207,20 @@ async function requestEmailVerify(userId) {
   }
   const code = Math.floor(100000 + Math.random() * 900000).toString();
   const expiresAt = new Date(Date.now() + 1000 * 60 * 15);
-  await prisma.otpCode.create({ data: { userId, code, purpose: 'EMAIL_VERIFY', expiresAt } });
-  await notificationClient.sendEmail({ to: user.email, subject: 'Verify your email', text: `Your verification code: ${code}` });
+  await prisma.otpCode.create({
+    data: { userId, code, purpose: 'EMAIL_VERIFY', expiresAt },
+  });
+  await notificationClient.sendEmail({
+    to: user.email,
+    subject: 'Verify your email',
+    text: `Your verification code: ${code}`,
+  });
 }
 
 async function confirmEmailVerify(userId, code) {
-  const otp = await prisma.otpCode.findFirst({ where: { userId, code, purpose: 'EMAIL_VERIFY', consumedAt: null } });
+  const otp = await prisma.otpCode.findFirst({
+    where: { userId, code, purpose: 'EMAIL_VERIFY', consumedAt: null },
+  });
   if (!otp || otp.expiresAt < new Date()) {
     const err = new Error('Invalid or expired code');
     err.status = 400;
@@ -217,8 +232,10 @@ async function confirmEmailVerify(userId, code) {
 
 async function generate2FASecret(userId) {
   const secret = speakeasy.generateSecret({ length: 20 });
-  // store secret but not enable until verified
-  await prisma.user.update({ where: { id: userId }, data: { twoFactorSecret: secret.base32 } });
+  await prisma.user.update({
+    where: { id: userId },
+    data: { twoFactorSecret: secret.base32 },
+  });
   return { otpauth_url: secret.otpauth_url, base32: secret.base32 };
 }
 
@@ -229,25 +246,30 @@ async function verifyAndEnable2FA(userId, token) {
     err.status = 400;
     throw err;
   }
-  const ok = speakeasy.totp.verify({ secret: user.twoFactorSecret, encoding: 'base32', token, window: 1 });
+  const ok = speakeasy.totp.verify({
+    secret: user.twoFactorSecret,
+    encoding: 'base32',
+    token,
+    window: 1,
+  });
   if (!ok) {
     const err = new Error('Invalid 2FA token');
     err.status = 400;
     throw err;
   }
-  await prisma.user.update({ where: { id: userId }, data: { twoFactorEnabled: true } });
+  await prisma.user.update({
+    where: { id: userId },
+    data: { twoFactorEnabled: true },
+  });
 }
 
 async function disable2FA(userId) {
-  await prisma.user.update({ where: { id: userId }, data: { twoFactorEnabled: false, twoFactorSecret: null } });
+  await prisma.user.update({
+    where: { id: userId },
+    data: { twoFactorEnabled: false, twoFactorSecret: null },
+  });
 }
 
-/**
- * Assembles the `/auth/me` payload from the identity authenticate() already
- * resolved (req.user: id, globalRole, businessId, businessRole,
- * cleanerProfileId) plus the public User fields and, if applicable, the
- * business summary the frontend's CurrentUser type expects.
- */
 async function getCurrentUser({ id, globalRole, businessId, businessRole }) {
   const user = await prisma.user.findUnique({
     where: { id },
@@ -278,11 +300,80 @@ async function getCurrentUser({ id, globalRole, businessId, businessRole }) {
   return { ...user, globalRole, businessId, businessRole, business };
 }
 
-module.exports.requestPasswordReset = requestPasswordReset;
-module.exports.confirmPasswordReset = confirmPasswordReset;
-module.exports.requestEmailVerify = requestEmailVerify;
-module.exports.confirmEmailVerify = confirmEmailVerify;
-module.exports.generate2FASecret = generate2FASecret;
-module.exports.verifyAndEnable2FA = verifyAndEnable2FA;
-module.exports.disable2FA = disable2FA;
-module.exports.getCurrentUser = getCurrentUser;
+async function updateCurrentUser(userId, { firstName, lastName, phone }) {
+  const data = {};
+  if (typeof firstName === 'string' && firstName.trim()) data.firstName = firstName.trim();
+  if (typeof lastName === 'string' && lastName.trim()) data.lastName = lastName.trim();
+  if (phone !== undefined) data.phone = phone ? String(phone).trim() : null;
+
+  if (Object.keys(data).length === 0) {
+    const err = new Error('No fields to update');
+    err.status = 400;
+    throw err;
+  }
+
+  return prisma.user.update({
+    where: { id: userId },
+    data,
+    select: {
+      id: true,
+      email: true,
+      phone: true,
+      firstName: true,
+      lastName: true,
+      isEmailVerified: true,
+      twoFactorEnabled: true,
+      createdAt: true,
+    },
+  });
+}
+
+async function changePassword(userId, { currentPassword, newPassword }) {
+  if (!currentPassword || !newPassword) {
+    const err = new Error('currentPassword and newPassword are required');
+    err.status = 400;
+    throw err;
+  }
+  if (String(newPassword).length < 8) {
+    const err = new Error('New password must be at least 8 characters');
+    err.status = 400;
+    throw err;
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    const err = new Error('User not found');
+    err.status = 404;
+    throw err;
+  }
+
+  const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+  if (!ok) {
+    const err = new Error('Current password is incorrect');
+    err.status = 401;
+    throw err;
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, 12);
+  await prisma.user.update({ where: { id: userId }, data: { passwordHash } });
+  await prisma.session.deleteMany({ where: { userId } });
+  return null;
+}
+
+// Single export object — do not assign module.exports more than once
+module.exports = {
+  registerBusiness,
+  login,
+  refresh,
+  logout,
+  requestPasswordReset,
+  confirmPasswordReset,
+  requestEmailVerify,
+  confirmEmailVerify,
+  generate2FASecret,
+  verifyAndEnable2FA,
+  disable2FA,
+  getCurrentUser,
+  updateCurrentUser,
+  changePassword,
+};

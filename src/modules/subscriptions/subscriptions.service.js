@@ -1,17 +1,24 @@
 const prisma = require('../../config/database');
-
-async function getSubscriptionForBusiness(businessId) {
-  return prisma.businessSubscription.findUnique({ where: { businessId }, include: { plan: true } });
-}
-
-module.exports = { getSubscriptionForBusiness };
-
 const stripeClient = require('../../lib/stripeClient');
 
-async function createSubscriptionForBusiness(businessId, { planId, stripeCustomerId, stripeSubscriptionId, billingEmail, billingPhone }) {
-  // Validate the plan up front regardless of which branch below runs — an
-  // invalid planId shouldn't slip through just because both Stripe IDs were
-  // already supplied.
+async function listPlans() {
+  return prisma.subscriptionPlan.findMany({
+    where: { isActive: true },
+    orderBy: { monthlyPriceCents: 'asc' },
+  });
+}
+
+async function getSubscriptionForBusiness(businessId) {
+  return prisma.businessSubscription.findUnique({
+    where: { businessId },
+    include: { plan: true },
+  });
+}
+
+async function createSubscriptionForBusiness(
+    businessId,
+    { planId, stripeCustomerId, stripeSubscriptionId, billingEmail, billingPhone }
+) {
   const plan = await prisma.subscriptionPlan.findUnique({ where: { id: planId } });
   if (!plan) {
     const err = new Error('Subscription plan not found');
@@ -19,12 +26,20 @@ async function createSubscriptionForBusiness(businessId, { planId, stripeCustome
     throw err;
   }
 
-  // if no stripeCustomerId provided, create one — this must succeed, since a
-  // subscription with no real Stripe customer behind it can never be billed
-  // or corrected by a webhook later.
+  // One subscription per business
+  const existing = await prisma.businessSubscription.findUnique({ where: { businessId } });
+  if (existing && existing.status !== 'CANCELED') {
+    const err = new Error('Business already has an active subscription. Cancel it first or update the plan.');
+    err.status = 409;
+    throw err;
+  }
+
   let stripeCid = stripeCustomerId;
   if (!stripeCid) {
-    stripeCid = await stripeClient.createCustomerForBusiness(businessId, { email: billingEmail, phone: billingPhone });
+    stripeCid = await stripeClient.createCustomerForBusiness(businessId, {
+      email: billingEmail,
+      phone: billingPhone,
+    });
   }
 
   let stripeSubId = stripeSubscriptionId;
@@ -38,14 +53,33 @@ async function createSubscriptionForBusiness(businessId, { planId, stripeCustome
     stripeSubId = stripeSub.id;
   }
 
-  // Status starts TRIALING/incomplete here regardless — the webhook handler
-  // (invoice.payment_succeeded / customer.subscription.updated) is the only
-  // place that should ever flip a subscription to ACTIVE, once Stripe
-  // confirms payment actually went through.
-  const created = await prisma.businessSubscription.create({
-    data: { businessId, planId, stripeCustomerId: stripeCid, stripeSubscriptionId: stripeSubId, status: 'TRIALING' },
+  // If a canceled row exists, reuse/update it; otherwise create
+  if (existing) {
+    return prisma.businessSubscription.update({
+      where: { id: existing.id },
+      data: {
+        planId,
+        stripeCustomerId: stripeCid,
+        stripeSubscriptionId: stripeSubId,
+        status: 'TRIALING',
+        canceledAt: null,
+        trialEndsAt: null,
+        currentPeriodEnd: null,
+      },
+      include: { plan: true },
+    });
+  }
+
+  return prisma.businessSubscription.create({
+    data: {
+      businessId,
+      planId,
+      stripeCustomerId: stripeCid,
+      stripeSubscriptionId: stripeSubId,
+      status: 'TRIALING',
+    },
+    include: { plan: true },
   });
-  return created;
 }
 
 async function updateSubscriptionForBusiness(businessId, patch) {
@@ -55,8 +89,11 @@ async function updateSubscriptionForBusiness(businessId, patch) {
     err.status = 404;
     throw err;
   }
-  const updated = await prisma.businessSubscription.update({ where: { id: sub.id }, data: patch });
-  return updated;
+  return prisma.businessSubscription.update({
+    where: { id: sub.id },
+    data: patch,
+    include: { plan: true },
+  });
 }
 
 async function cancelSubscriptionForBusiness(businessId) {
@@ -67,14 +104,15 @@ async function cancelSubscriptionForBusiness(businessId) {
     try {
       await stripeClient.cancelSubscription(sub.stripeSubscriptionId);
     } catch (e) {
-      // If Stripe already considers it canceled (e.g. a race with a webhook),
-      // don't block the local cancellation on that; any other failure should
-      // surface so the caller knows billing wasn't actually stopped.
       if (e.code !== 'resource_missing') throw e;
     }
   }
 
-  return prisma.businessSubscription.update({ where: { id: sub.id }, data: { status: 'CANCELED', canceledAt: new Date() } });
+  return prisma.businessSubscription.update({
+    where: { id: sub.id },
+    data: { status: 'CANCELED', canceledAt: new Date() },
+    include: { plan: true },
+  });
 }
 
 async function listInvoicesForBusiness(businessId) {
@@ -86,4 +124,11 @@ async function listInvoicesForBusiness(businessId) {
   });
 }
 
-module.exports = { getSubscriptionForBusiness, createSubscriptionForBusiness, updateSubscriptionForBusiness, cancelSubscriptionForBusiness, listInvoicesForBusiness };
+module.exports = {
+  listPlans,
+  getSubscriptionForBusiness,
+  createSubscriptionForBusiness,
+  updateSubscriptionForBusiness,
+  cancelSubscriptionForBusiness,
+  listInvoicesForBusiness,
+};

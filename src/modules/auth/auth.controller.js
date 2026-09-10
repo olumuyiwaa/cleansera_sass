@@ -44,8 +44,6 @@ async function logout(req, res, next) {
   }
 }
 
-module.exports = { register, login, refresh, logout };
-
 async function requestPasswordReset(req, res, next) {
   try {
     await authService.requestPasswordReset(req.body.email);
@@ -118,11 +116,43 @@ async function me(req, res, next) {
   }
 }
 
-module.exports.requestPasswordReset = requestPasswordReset;
-module.exports.confirmPasswordReset = confirmPasswordReset;
-module.exports.requestEmailVerify = requestEmailVerify;
-module.exports.confirmEmailVerify = confirmEmailVerify;
-module.exports.generate2FA = generate2FA;
-module.exports.verifyEnable2FA = verifyEnable2FA;
-module.exports.disable2FA = disable2FA;
-module.exports.me = me;
+async function updateMe(req, res, next) {
+  try {
+    await authService.updateCurrentUser(req.user.id, req.body);
+    const full = await authService.getCurrentUser({
+      id: req.user.id,
+      globalRole: req.user.globalRole,
+      businessId: req.user.businessId,
+      businessRole: req.user.businessRole,
+    });
+    return success(res, 200, full, 'Profile updated');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function changePassword(req, res, next) {
+  try {
+    await authService.changePassword(req.user.id, req.body);
+    return success(res, 200, null, 'Password changed. Please sign in again.');
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = {
+  register,
+  login,
+  refresh,
+  logout,
+  requestPasswordReset,
+  confirmPasswordReset,
+  requestEmailVerify,
+  confirmEmailVerify,
+  generate2FA,
+  verifyEnable2FA,
+  disable2FA,
+  me,
+  updateMe,
+  changePassword,
+};

@@ -34,5 +34,6 @@ router.use('/widget-embed/:subdomain', widgetRoutes.slugRouter);
 router.use('/portal', require('../modules/customerPortal/customerPortal.routes'));
 router.use('/demo-requests', require('../modules/demoRequests/demoRequests.routes'));
 router.use('/support', require('../modules/supportContact/supportContact.routes'));
+router.use('/calendar', require('../modules/calendar/calendar.routes'));
 
 module.exports = router;

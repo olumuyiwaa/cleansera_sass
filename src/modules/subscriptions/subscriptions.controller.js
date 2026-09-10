@@ -1,6 +1,15 @@
 const service = require('./subscriptions.service');
 const { success } = require('../../utils/response');
 
+async function listPlans(req, res, next) {
+  try {
+    const plans = await service.listPlans();
+    return success(res, 200, plans);
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function getSubscription(req, res, next) {
   try {
     const sub = await service.getSubscriptionForBusiness(req.businessId);
@@ -30,8 +39,8 @@ async function createSubscription(req, res, next) {
 
 async function cancelSubscription(req, res, next) {
   try {
-    await service.cancelSubscriptionForBusiness(req.businessId);
-    return success(res, 200, null, 'Subscription canceled');
+    const s = await service.cancelSubscriptionForBusiness(req.businessId);
+    return success(res, 200, s, 'Subscription canceled');
   } catch (err) {
     next(err);
   }
@@ -46,4 +55,11 @@ async function listInvoices(req, res, next) {
   }
 }
 
-module.exports = { getSubscription, updateSubscription, createSubscription, cancelSubscription, listInvoices };
+module.exports = {
+  listPlans,
+  getSubscription,
+  updateSubscription,
+  createSubscription,
+  cancelSubscription,
+  listInvoices,
+};
