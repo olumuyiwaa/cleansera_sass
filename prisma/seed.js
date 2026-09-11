@@ -57,7 +57,7 @@ async function seed() {
   if (!business) {
     business = await prisma.business.create({
       data: {
-        name: 'SparkleClean Netherlands',
+        name: 'Lady Greener Netherlands',
         subdomain: 'ladygreener',
         timezone: 'Europe/Netherlands',
         branding: {
