@@ -1,0 +1,41 @@
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -448,6 +448,16 @@
+ // BOOKINGS
+ // ============================================================
+ 
++enum PaymentStatus {
++  UNPAID
++  DEPOSIT_PAID
++  PAID
++  PARTIAL
++  REFUNDED
++  FAILED
++}
++
+ enum BookingStatus {
+   REQUESTED
+   CONFIRMED
+@@ -508,8 +518,12 @@ model Booking {
+   quotedPriceCents    Int
+   couponId            String?
+   coupon              Coupon?            @relation(fields: [couponId], references: [id])
+-  // Bookkeeping only — CleanSera does not process this payment
+-  paymentStatus       String             @default("UNPAID") // UNPAID | PAID | PARTIAL
++  paymentStatus             PaymentStatus @default(UNPAID)
++  stripeCheckoutSessionId   String?
++  stripePaymentIntentId     String?
++  amountPaidCents           Int?
++  autoChargeOnComplete      Boolean       @default(false)
+   paymentNote         String?
+   cancelReason        String?
+   reminderSentAt      DateTime?
+@@ -528,6 +542,7 @@ model Booking {
+   @@unique([recurringScheduleId, scheduledStart])
+   @@index([businessId])
+   @@index([businessId, status])
+   @@index([businessId, scheduledStart])
++  @@index([paymentStatus])
+ }
+ 
+ model BookingAssignment {

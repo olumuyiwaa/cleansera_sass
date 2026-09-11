@@ -457,6 +457,15 @@ enum BookingStatus {
   CANCELLED
 }
 
+enum PaymentStatus {
+  UNPAID
+  DEPOSIT_PAID
+  PAID
+  PARTIAL
+  REFUNDED
+  FAILED
+}
+
 enum RecurrenceFrequency {
   WEEKLY
   BIWEEKLY
@@ -486,34 +495,38 @@ model RecurringSchedule {
 }
 
 model Booking {
-  id                  String             @id @default(cuid())
-  businessId          String
-  business            Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  customerId          String
-  customer            Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  serviceId           String
-  service             Service            @relation(fields: [serviceId], references: [id])
-  recurringScheduleId String?
-  recurringSchedule   RecurringSchedule? @relation(fields: [recurringScheduleId], references: [id])
-  addressLine1        String
-  addressLine2        String?
-  city                String
-  state               String
-  latitude            Float?
-  longitude           Float?
-  scheduledStart      DateTime
-  scheduledEnd        DateTime
-  status              BookingStatus      @default(REQUESTED)
-  quotedPriceCents    Int
-  couponId            String?
-  coupon              Coupon?            @relation(fields: [couponId], references: [id])
+  id                      String             @id @default(cuid())
+  businessId              String
+  business                Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customerId              String
+  customer                Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  serviceId               String
+  service                 Service            @relation(fields: [serviceId], references: [id])
+  recurringScheduleId     String?
+  recurringSchedule       RecurringSchedule? @relation(fields: [recurringScheduleId], references: [id])
+  addressLine1            String
+  addressLine2            String?
+  city                    String
+  state                   String
+  latitude                Float?
+  longitude               Float?
+  scheduledStart          DateTime
+  scheduledEnd            DateTime
+  status                  BookingStatus      @default(REQUESTED)
+  quotedPriceCents        Int
+  couponId                String?
+  coupon                  Coupon?            @relation(fields: [couponId], references: [id])
   // Bookkeeping only — CleanSera does not process this payment
-  paymentStatus       String             @default("UNPAID") // UNPAID | PAID | PARTIAL
-  paymentNote         String?
-  cancelReason        String?
-  reminderSentAt      DateTime?
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  paymentStatus           PaymentStatus      @default(UNPAID)
+  stripeCheckoutSessionId String?
+  stripePaymentIntentId   String?
+  amountPaidCents         Int?
+  autoChargeOnComplete    Boolean            @default(false)
+  paymentNote             String?
+  cancelReason            String?
+  reminderSentAt          DateTime?
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
 
   assignments BookingAssignment[]
   checklist   JobChecklist?
@@ -529,6 +542,7 @@ model Booking {
   @@index([businessId])
   @@index([businessId, status])
   @@index([businessId, scheduledStart])
+  @@index([paymentStatus])
 }
 
 model BookingAssignment {
