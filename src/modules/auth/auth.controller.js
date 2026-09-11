@@ -12,13 +12,42 @@ async function register(req, res, next) {
 
 async function login(req, res, next) {
   try {
-    const tokens = await authService.login({
+    const result = await authService.login({
       ...req.body,
       twoFactorCode: req.body.twoFactorCode,
       userAgent: req.headers['user-agent'],
       ipAddress: req.ip,
     });
-    return success(res, 200, tokens, 'Logged in');
+    if (result.requiresBusinessSelection) {
+      // Credentials were correct, but this account is affiliated with more
+      // than one business. Client should present `affiliations` and re-submit
+      // login with a `businessId`.
+      return success(res, 200, result, 'Select a business to continue');
+    }
+    return success(res, 200, result, 'Logged in');
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Switch the active business workspace for an already-authenticated user. */
+async function selectBusiness(req, res, next) {
+  try {
+    const tokens = await authService.selectBusiness(req.user.id, req.body.businessId, {
+      userAgent: req.headers['user-agent'],
+      ipAddress: req.ip,
+    });
+    return success(res, 200, tokens, 'Switched business');
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Lists every business (as staff or cleaner) the current user can switch into. */
+async function affiliations(req, res, next) {
+  try {
+    const list = await authService.listAffiliations(req.user.id);
+    return success(res, 200, list);
   } catch (err) {
     next(err);
   }
@@ -155,4 +184,6 @@ module.exports = {
   me,
   updateMe,
   changePassword,
+  selectBusiness,
+  affiliations,
 };

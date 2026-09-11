@@ -54,4 +54,16 @@ async function auditTrail(req, res, next) {
   }
 }
 
-module.exports = { list, kpis, revenue, cleanerPerf, auditTrail };
+
+async function orgSummary(req, res, next) {
+  try {
+    // req.businessId is the caller's own business — for an org-level role
+    // that's the parent, so this rolls up its own locations directly.
+    const data = await service.orgSummary(req.businessId, { from: req.query.from, to: req.query.to });
+    return success(res, 200, data);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { list, kpis, revenue, cleanerPerf, auditTrail, orgSummary };

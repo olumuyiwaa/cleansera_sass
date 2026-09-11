@@ -86,4 +86,15 @@ router.patch(
     controller.changePassword
 );
 
+// Multi-business affiliation: list the workspaces this account can act
+// within, and switch the active one without a full re-login.
+router.get('/affiliations', authenticate, controller.affiliations);
+router.post(
+    '/select-business',
+    authenticate,
+    [body('businessId').notEmpty()],
+    validate,
+    controller.selectBusiness
+);
+
 module.exports = router;

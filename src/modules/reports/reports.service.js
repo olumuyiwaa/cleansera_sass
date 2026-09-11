@@ -136,6 +136,21 @@ async function cleanerPerformance(businessId, { from, to } = {}) {
       .filter((a) => a.booking.status === 'COMPLETED')
       .reduce((s, a) => s + (a.booking.quotedPriceCents || 0), 0);
     const onTimeCheckins = assignments.filter((a) => a.checkedInAt).length;
+    
+    // Quality: customer ratings tied directly to this cleaner via Review.cleanerId
+    const reviewWhere = { cleanerId: c.id };
+    if (from || to) {
+      reviewWhere.createdAt = {};
+      if (from) reviewWhere.createdAt.gte = new Date(from);
+      if (to) reviewWhere.createdAt.lte = new Date(to);
+    }
+    const reviewAgg = await prisma.review.aggregate({
+      where: reviewWhere,
+      _avg: { rating: true },
+      _count: { rating: true },
+    });
+    const lowRatings = await prisma.review.count({ where: { ...reviewWhere, rating: { lte: 2 } } });
+
     results.push({
       cleanerId: c.id,
       name: `${c.user.firstName} ${c.user.lastName}`,
@@ -145,6 +160,9 @@ async function cleanerPerformance(businessId, { from, to } = {}) {
       completed,
       revenueCents,
       checkIns: onTimeCheckins,
+      avgRating: reviewAgg._avg.rating != null ? Math.round(reviewAgg._avg.rating * 100) / 100 : null,
+      reviewCount: reviewAgg._count.rating,
+      lowRatingCount: lowRatings,
     });
   }
   results.sort((a, b) => b.revenueCents - a.revenueCents);
@@ -219,7 +237,46 @@ async function auditTrail(businessId, { page = 1, limit = 20, from, to, userId, 
   };
 }
 
+
+/**
+ * Rolls KPIs up across every location under a franchise parent, plus the
+ * per-location breakdown so an owner can see which branch is driving (or
+ * dragging) the aggregate. Locations remain operationally independent —
+ * this is a read-only summary, not a merged dataset.
+ */
+async function orgSummary(parentBusinessId, { from, to } = {}) {
+  const locations = await prisma.business.findMany({
+    where: { parentBusinessId },
+    select: { id: true, name: true, subdomain: true },
+  });
+
+  const perLocation = await Promise.all(
+    locations.map(async (loc) => ({
+      businessId: loc.id,
+      name: loc.name,
+      subdomain: loc.subdomain,
+      kpis: await generateKPIs(loc.id, { from, to }),
+    }))
+  );
+
+  const totals = perLocation.reduce(
+    (acc, l) => ({
+      total: acc.total + l.kpis.total,
+      completed: acc.completed + l.kpis.completed,
+      cancelled: acc.cancelled + l.kpis.cancelled,
+      revenueCents: acc.revenueCents + l.kpis.revenueCents,
+      collectedCents: acc.collectedCents + l.kpis.collectedCents,
+      activeCleaners: acc.activeCleaners + l.kpis.activeCleaners,
+      totalCustomers: acc.totalCustomers + l.kpis.totalCustomers,
+    }),
+    { total: 0, completed: 0, cancelled: 0, revenueCents: 0, collectedCents: 0, activeCleaners: 0, totalCustomers: 0 }
+  );
+
+  return { locationCount: locations.length, totals, locations: perLocation };
+}
+
 module.exports = {
+  orgSummary,
   generateSummary,
   generateKPIs,
   revenueByDay,

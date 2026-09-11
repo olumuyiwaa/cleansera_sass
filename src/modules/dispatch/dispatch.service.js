@@ -1,4 +1,5 @@
 const prisma = require('../../config/database');
+const { audit } = require('../../utils/audit');
 
 async function listDispatchItems(businessId) {
   // Return recent booking assignments for dispatch dashboard
@@ -29,19 +30,41 @@ async function createAssignment(businessId, bookingId, cleanerId, actorUserId) {
       throw err;
     }
   }
+  let pickReason = 'manual';
   if (!chosenCleaner) {
-    // find candidates
-    const candidates = await scheduler.findAvailableCleaners(businessId, booking.scheduledStart, booking.scheduledEnd, { lat: booking.latitude, lng: booking.longitude });
+    // Ranked by travel distance/ETA with workload as a tiebreaker — see
+    // lib/scheduler.js. The top candidate is an actual recommendation now,
+    // not just whichever row Postgres happened to return first.
+    const candidates = await scheduler.findAvailableCleaners(businessId, booking.scheduledStart, booking.scheduledEnd, {
+      lat: booking.latitude,
+      lng: booking.longitude,
+      includeEta: true,
+    });
     if (!candidates || candidates.length === 0) {
       const err = new Error('No available cleaners found');
       err.status = 409;
       throw err;
     }
-    chosenCleaner = candidates[0].id;
+    const top = candidates[0];
+    chosenCleaner = top.cleaner.id;
+    pickReason = JSON.stringify({
+      distanceMeters: top.distanceMeters,
+      etaSeconds: top.etaSeconds,
+      locationSource: top.locationSource,
+      workload: top.workload,
+    });
   }
 
   const assignment = await prisma.bookingAssignment.create({ data: { bookingId, cleanerId: chosenCleaner } });
   await prisma.booking.update({ where: { id: bookingId }, data: { status: 'ASSIGNED' } });
+  await audit({
+    businessId,
+    actorUserId,
+    action: 'DISPATCH_AUTO_ASSIGNED',
+    entityType: 'BookingAssignment',
+    entityId: assignment.id,
+    metadata: { cleanerId: chosenCleaner, reason: pickReason },
+  });
   return assignment;
 }
 

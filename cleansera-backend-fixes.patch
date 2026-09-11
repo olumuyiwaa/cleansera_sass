@@ -1,0 +1,1204 @@
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index 74c8d21..e7ae00c 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -36,7 +36,7 @@ model User {
+   passwordResets      PasswordReset[]
+   otpCodes            OtpCode[]
+   businessMemberships BusinessMember[]
+-  cleanerProfile      CleanerProfile?
++  cleanerProfiles     CleanerProfile[]
+   auditLogs           AuditLog[]
+ 
+   @@index([email])
+@@ -47,6 +47,12 @@ model Session {
+   userId       String
+   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+   refreshToken String   @unique
++  // The business workspace this session was issued for. A user with
++  // affiliations to more than one business (e.g. a cleaner working for two
++  // companies) can hold concurrent sessions in different workspaces; refresh
++  // keeps you in the same one instead of re-resolving to "whichever
++  // affiliation happens to come back first".
++  businessId   String?
+   userAgent    String?
+   ipAddress    String?
+   expiresAt    DateTime
+@@ -97,6 +103,15 @@ model Business {
+   createdAt    DateTime @default(now())
+   updatedAt    DateTime @updatedAt
+ 
++  // Franchise / multi-location support. Each location is still a full,
++  // independently-scoped tenant (its own cleaners, customers, bookings,
++  // widget subdomain) — nothing about the isolation model above changes.
++  // parentBusinessId only adds a rollup: an ORG_ADMIN member of the parent
++  // can view aggregated reporting and switch between its locations.
++  parentBusinessId String?
++  parentBusiness    Business?  @relation("BusinessLocations", fields: [parentBusinessId], references: [id], onDelete: SetNull)
++  locations         Business[] @relation("BusinessLocations")
++
+   // Stripe Connect — required before this business can accept job-level
+   // customer payments through CleanSera. Money for a paid booking is
+   // transferred to this connected account (minus the platform fee), never
+@@ -129,6 +144,7 @@ model Business {
+   cleanerDocuments   CleanerDocument[]
+ 
+   @@index([subdomain])
++  @@index([parentBusinessId])
+ }
+ 
+ model BusinessBranding {
+@@ -221,6 +237,11 @@ model Coupon {
+ enum BusinessMemberRole {
+   BUSINESS_OWNER
+   BUSINESS_MANAGER
++  // Membership lives on the *parent* Business (the franchise/org record).
++  // Grants read/manage access across all of that parent's `locations`,
++  // resolved explicitly via ?businessId= per request — never implicit
++  // access to a location's data without naming it.
++  ORG_ADMIN
+ }
+ 
+ model BusinessMember {
+@@ -300,22 +321,36 @@ model CleanerProfile {
+   id               String        @id @default(cuid())
+   businessId       String
+   business         Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+-  userId           String        @unique
++  userId           String
+   user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+   status           CleanerStatus @default(PENDING)
+   hireDate         DateTime?
+   offboardedAt     DateTime?
+   offboardedReason String?
+   serviceAreaIds   String[] // ServiceArea ids this cleaner covers
++
++  // Best-known live position, updated on clock-in/clock-out. Used by
++  // dispatch for real proximity ranking instead of inferring location from
++  // wherever the cleaner's last completed job happened to be.
++  lastKnownLat Float?
++  lastKnownLng Float?
++  lastKnownAt  DateTime?
++
+   createdAt        DateTime      @default(now())
+   updatedAt        DateTime      @updatedAt
+ 
+   availability CleanerAvailability[]
+   assignments  BookingAssignment[]
+   documents    CleanerDocument[]
++  reviews      Review[]
+ 
++  // One profile per person per business — not per person globally. A
++  // cleaner offboarded by Business A can be onboarded fresh by Business B
++  // (or re-onboarded by A) without an email collision.
++  @@unique([businessId, userId])
+   @@index([businessId])
+   @@index([businessId, status])
++  @@index([userId])
+ }
+ 
+ model CleanerAvailability {
+@@ -557,18 +592,24 @@ model JobPhoto {
+ // ============================================================
+ 
+ model Review {
+-  id         String   @id @default(cuid())
++  id         String          @id @default(cuid())
+   businessId String
+-  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+-  bookingId  String   @unique
+-  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
++  business   Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
++  bookingId  String          @unique
++  booking    Booking         @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+   customerId String
+-  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
++  customer   Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
++  // Backfilled from the booking's primary assignment at review time. Nullable
++  // because a booking can in principle be reviewed with no assignment on
++  // record (e.g. data imported from elsewhere) — never block a review over it.
++  cleanerId  String?
++  cleaner    CleanerProfile? @relation(fields: [cleanerId], references: [id], onDelete: SetNull)
+   rating     Int // 1-5
+   comment    String?
+-  createdAt  DateTime @default(now())
++  createdAt  DateTime        @default(now())
+ 
+   @@index([businessId])
++  @@index([cleanerId])
+ }
+ 
+ // ============================================================
+diff --git a/prisma/seed.js b/prisma/seed.js
+index 72cf1f3..0da74f0 100644
+--- a/prisma/seed.js
++++ b/prisma/seed.js
+@@ -242,7 +242,7 @@ async function seed() {
+       },
+     });
+ 
+-    let profile = await prisma.cleanerProfile.findUnique({ where: { userId: user.id } });
++    let profile = await prisma.cleanerProfile.findUnique({ where: { businessId_userId: { businessId: business.id, userId: user.id } } });
+     if (!profile) {
+       profile = await prisma.cleanerProfile.create({
+         data: {
+diff --git a/src/lib/scheduler.js b/src/lib/scheduler.js
+index 887c427..0da0b25 100644
+--- a/src/lib/scheduler.js
++++ b/src/lib/scheduler.js
+@@ -22,67 +22,130 @@ function slotCovers(slot, startDate, endDate) {
+ }
+ 
+ /**
+- * Find available cleaners for a booking window.
++ * Best-known reference point for a cleaner, in priority order:
++ *   1. CleanerProfile.lastKnownLat/Lng - set on every clock-in/clock-out,
++ *      so this reflects where they actually were most recently, not where
++ *      a job happened to be.
++ *   2. The location of their most recent assignment (any status) - a
++ *      reasonable guess when they haven't clocked in yet today.
++ *   3. The center of the business's first configured service area - better
++ *      than nothing for a brand-new cleaner with no history at all.
++ * Returns null only if none of the above exist (no service areas configured
++ * either), in which case distance-based ranking is skipped for that cleaner.
++ */
++async function resolveCleanerLocation(cleaner, businessId) {
++  if (cleaner.lastKnownLat != null && cleaner.lastKnownLng != null) {
++    return { lat: cleaner.lastKnownLat, lng: cleaner.lastKnownLng, source: 'last_known' };
++  }
++
++  const lastAssignment = await prisma.bookingAssignment.findFirst({
++    where: { cleanerId: cleaner.id },
++    orderBy: { assignedAt: 'desc' },
++    include: { booking: true },
++  });
++  if (lastAssignment?.booking?.latitude != null && lastAssignment?.booking?.longitude != null) {
++    return { lat: lastAssignment.booking.latitude, lng: lastAssignment.booking.longitude, source: 'last_job' };
++  }
++
++  const area = await prisma.serviceArea.findFirst({ where: { businessId }, orderBy: { createdAt: 'asc' } });
++  if (area) {
++    return { lat: area.centerLat, lng: area.centerLng, source: 'service_area_center' };
++  }
++
++  return null;
++}
++
++/** Number of active (non-cancelled) assignments this cleaner already has in the 7 days around the target date - used to spread work across the team instead of always picking the closest cleaner. */
++async function currentWorkload(cleanerId, aroundDate) {
++  const windowStart = new Date(aroundDate);
++  windowStart.setDate(windowStart.getDate() - 3);
++  const windowEnd = new Date(aroundDate);
++  windowEnd.setDate(windowEnd.getDate() + 4);
++
++  return prisma.bookingAssignment.count({
++    where: {
++      cleanerId,
++      booking: { status: { not: 'CANCELLED' }, scheduledStart: { gte: windowStart, lte: windowEnd } },
++    },
++  });
++}
++
++/**
++ * Find available cleaners for a booking window, ranked best-first.
+  * - excludes cleaners with overlapping assignments within buffer minutes
+  * - checks cleaner availability slots
+- * - optionally filters by proximity (within maxDistanceMeters)
++ * - ranks by a combined score of travel time/distance and current workload,
++ *   so the #1 candidate is an actual recommendation, not just DB row order
+  */
+ async function findAvailableCleaners(businessId, startDate, endDate, { maxDistanceMeters = 30000, travelBufferMinutes = 30, lat, lng, includeEta = false } = {}) {
+-  // fetch active cleaners with availability
+   const cleaners = await prisma.cleanerProfile.findMany({ where: { businessId, status: 'ACTIVE' }, include: { availability: true, user: true } });
+ 
+   const candidates = [];
+   for (const c of cleaners) {
+-    // availability: ensure at least one slot covers the booking window
+     const hasSlot = c.availability && c.availability.some((s) => slotCovers(s, startDate, endDate));
+     if (!hasSlot) continue;
+ 
+-    // fetch assignments that overlap with [start - buffer, end + buffer]
+     const bufferMs = travelBufferMinutes * 60 * 1000;
+     const windowStart = new Date(startDate.getTime() - bufferMs);
+     const windowEnd = new Date(endDate.getTime() + bufferMs);
+-    const overlapping = await prisma.bookingAssignment.findFirst({ where: { cleanerId: c.id, booking: { scheduledStart: { lte: windowEnd }, scheduledEnd: { gte: windowStart } } }, include: { booking: true } });
++    const overlapping = await prisma.bookingAssignment.findFirst({
++      where: { cleanerId: c.id, booking: { status: { not: 'CANCELLED' }, scheduledStart: { lte: windowEnd }, scheduledEnd: { gte: windowStart } } },
++      include: { booking: true },
++    });
+     if (overlapping) continue;
+ 
+-    // distance check if lat/lng provided and cleaner has recent assignment or base location
+-    let distanceInfo = null;
++    let distanceMetersVal = null;
++    let etaSeconds = null;
++    let locationSource = null;
++
+     if (lat != null && lng != null) {
+-      // if cleaner has serviceAreaIds, skip distance heuristic; otherwise allow
+-      // For now, just compute distance from cleaner's last assignment end or business center if available
+-      const lastAssignment = await prisma.bookingAssignment.findFirst({ where: { cleanerId: c.id }, orderBy: { assignedAt: 'desc' }, include: { booking: true } });
+-      let refLat = lat;
+-      let refLng = lng;
+-      if (lastAssignment && lastAssignment.booking && lastAssignment.booking.latitude != null && lastAssignment.booking.longitude != null) {
+-        const d = distanceMeters(lastAssignment.booking.latitude, lastAssignment.booking.longitude, lat, lng);
+-        if (d > maxDistanceMeters) continue;
+-        distanceInfo = { distanceMeters: d };
+-      }
+-    }
+-    if (includeEta && distanceInfo == null && lat != null && lng != null) {
+-      // try to compute ETA via Google Distance Matrix if available
+-      try {
+-        const distanceClient = require('./distance');
+-        // assume cleaner's last known location from last assignment
+-        const lastAssignment = await prisma.bookingAssignment.findFirst({ where: { cleanerId: c.id }, orderBy: { assignedAt: 'desc' }, include: { booking: true } });
+-        if (lastAssignment && lastAssignment.booking && lastAssignment.booking.latitude != null && lastAssignment.booking.longitude != null) {
+-          const dd = await distanceClient.distanceAndDuration({ lat: lastAssignment.booking.latitude, lng: lastAssignment.booking.longitude }, { lat, lng });
+-          if (dd) distanceInfo = { distanceMeters: dd.distanceMeters, durationSeconds: dd.durationSeconds };
++      const ref = await resolveCleanerLocation(c, businessId);
++      if (ref) {
++        locationSource = ref.source;
++        if (includeEta) {
++          try {
++            const distanceClient = require('./distance');
++            const dd = await distanceClient.distanceAndDuration(ref, { lat, lng });
++            if (dd) {
++              distanceMetersVal = dd.distanceMeters;
++              etaSeconds = dd.durationSeconds;
++            }
++          } catch (e) {
++            // fall through to the straight-line estimate below
++          }
++        }
++        if (distanceMetersVal == null) {
++          distanceMetersVal = distanceMeters(ref.lat, ref.lng, lat, lng);
+         }
+-      } catch (e) {
+-        // ignore
++        if (distanceMetersVal > maxDistanceMeters) continue;
+       }
+     }
+ 
+-    if (includeEta && distanceInfo) {
+-      candidates.push({ cleaner: c, distanceMeters: distanceInfo.distanceMeters || 0, etaSeconds: distanceInfo.durationSeconds || null });
+-    } else if (includeEta) {
+-      candidates.push({ cleaner: c, distanceMeters: null, etaSeconds: null });
+-    } else {
+-      candidates.push(c);
+-    }
++    const workload = await currentWorkload(c.id, startDate);
++
++    candidates.push({
++      cleaner: c,
++      distanceMeters: distanceMetersVal,
++      etaSeconds,
++      locationSource,
++      workload,
++    });
+   }
+ 
+-  return candidates;
++  // Rank: primarily by travel time/distance (closer is better), with
++  // workload as a tiebreaker among cleaners who are roughly equally close
++  // (within 2km) - prevents always stacking jobs on whoever happens to live
++  // nearest the office while a less-loaded cleaner a bit farther out sits idle.
++  candidates.sort((a, b) => {
++    const aDist = a.etaSeconds ?? a.distanceMeters ?? Infinity;
++    const bDist = b.etaSeconds ?? b.distanceMeters ?? Infinity;
++    const closeEnough = Math.abs((a.distanceMeters ?? 0) - (b.distanceMeters ?? 0)) < 2000;
++    if (closeEnough && a.workload !== b.workload) return a.workload - b.workload;
++    return aDist - bDist;
++  });
++
++  if (includeEta) return candidates;
++  return candidates.map((c) => c.cleaner);
+ }
+ 
+ module.exports = { findAvailableCleaners };
+diff --git a/src/middleware/scopeToBusiness.js b/src/middleware/scopeToBusiness.js
+index d9df685..e309f58 100644
+--- a/src/middleware/scopeToBusiness.js
++++ b/src/middleware/scopeToBusiness.js
+@@ -1,4 +1,5 @@
+ const { error } = require('../utils/response');
++const prisma = require('../config/database');
+ 
+ /**
+  * Guarantees the authenticated user is attached to a business before hitting
+@@ -6,16 +7,39 @@ const { error } = require('../utils/response');
+  * of truth for every downstream Prisma query in this request.
+  *
+  * SUPER_ADMIN may pass a businessId explicitly (query param or body) to act
+- * on behalf of a business for support purposes; everyone else is locked to
+- * the business resolved during authenticate().
++ * on behalf of a business for support purposes.
++ *
++ * ORG_ADMIN (a membership on a *parent* franchise Business) may likewise
++ * pass a businessId explicitly, but only to one of that parent's own
++ * `locations` — never to an arbitrary business. This is what lets a
++ * franchise owner switch between their locations from one login without
++ * granting blanket cross-tenant access.
++ *
++ * Everyone else is locked to the business resolved during authenticate().
+  */
+-function scopeToBusiness(req, res, next) {
+-  if (req.user?.globalRole === 'SUPER_ADMIN') {
+-    const override = req.query.businessId || req.body?.businessId;
+-    if (override) {
+-      req.businessId = override;
+-      return next();
++async function scopeToBusiness(req, res, next) {
++  const override = req.query.businessId || req.body?.businessId;
++
++  if (req.user?.globalRole === 'SUPER_ADMIN' && override) {
++    req.businessId = override;
++    return next();
++  }
++
++  // BUSINESS_OWNER is included here too: the owner of a parent/HQ business
++  // naturally has the same cross-location reach as an explicitly assigned
++  // ORG_ADMIN, without a separate role grant.
++  const isOrgLevelRole = req.user?.businessRole === 'ORG_ADMIN' || req.user?.businessRole === 'BUSINESS_OWNER';
++  if (override && isOrgLevelRole && req.user?.businessId) {
++    const location = await prisma.business.findFirst({
++      where: { id: override, parentBusinessId: req.user.businessId },
++      select: { id: true },
++    });
++    if (!location) {
++      return error(res, 403, 'That business is not one of your organization\'s locations');
+     }
++    req.businessId = location.id;
++    req.orgId = req.user.businessId;
++    return next();
+   }
+ 
+   if (!req.user?.businessId) {
+diff --git a/src/modules/auth/auth.controller.js b/src/modules/auth/auth.controller.js
+index 394eb7a..c5f18f1 100644
+--- a/src/modules/auth/auth.controller.js
++++ b/src/modules/auth/auth.controller.js
+@@ -12,13 +12,42 @@ async function register(req, res, next) {
+ 
+ async function login(req, res, next) {
+   try {
+-    const tokens = await authService.login({
++    const result = await authService.login({
+       ...req.body,
+       twoFactorCode: req.body.twoFactorCode,
+       userAgent: req.headers['user-agent'],
+       ipAddress: req.ip,
+     });
+-    return success(res, 200, tokens, 'Logged in');
++    if (result.requiresBusinessSelection) {
++      // Not an error — credentials were correct, but this account is
++      // affiliated with more than one business. Client should present
++      // `affiliations` and re-submit login with a `businessId`.
++      return success(res, 200, result, 'Select a business to continue');
++    }
++    return success(res, 200, result, 'Logged in');
++  } catch (err) {
++    next(err);
++  }
++}
++
++/** Switch the active business workspace for an already-authenticated user. */
++async function selectBusiness(req, res, next) {
++  try {
++    const tokens = await authService.selectBusiness(req.user.id, req.body.businessId, {
++      userAgent: req.headers['user-agent'],
++      ipAddress: req.ip,
++    });
++    return success(res, 200, tokens, 'Switched business');
++  } catch (err) {
++    next(err);
++  }
++}
++
++/** Lists every business (as staff or cleaner) the current user can switch into. */
++async function affiliations(req, res, next) {
++  try {
++    const list = await authService.listAffiliations(req.user.id);
++    return success(res, 200, list);
+   } catch (err) {
+     next(err);
+   }
+@@ -44,7 +73,7 @@ async function logout(req, res, next) {
+   }
+ }
+ 
+-module.exports = { register, login, refresh, logout };
++module.exports = { register, login, refresh, logout, selectBusiness, affiliations };
+ 
+ async function requestPasswordReset(req, res, next) {
+   try {
+diff --git a/src/modules/auth/auth.routes.js b/src/modules/auth/auth.routes.js
+index 9be078e..7337fd0 100644
+--- a/src/modules/auth/auth.routes.js
++++ b/src/modules/auth/auth.routes.js
+@@ -46,4 +46,9 @@ router.post('/2fa/verify-enable', authenticate, [body('token').notEmpty()], vali
+ router.post('/2fa/disable', authenticate, controller.disable2FA);
+ router.get('/me', authenticate, controller.me);
+ 
++// Multi-business affiliation: list the workspaces this account can act
++// within, and switch the active one without a full re-login.
++router.get('/affiliations', authenticate, controller.affiliations);
++router.post('/select-business', authenticate, [body('businessId').notEmpty()], validate, controller.selectBusiness);
++
+ module.exports = router;
+diff --git a/src/modules/auth/auth.service.js b/src/modules/auth/auth.service.js
+index c5557a6..63ad57c 100644
+--- a/src/modules/auth/auth.service.js
++++ b/src/modules/auth/auth.service.js
+@@ -70,7 +70,7 @@ async function registerBusiness({ businessName, subdomain, firstName, lastName,
+   return issueSession(result.user.id, result.business.id);
+ }
+ 
+-async function login({ email, password, twoFactorCode, userAgent, ipAddress }) {
++async function login({ email, password, twoFactorCode, businessId, userAgent, ipAddress }) {
+   const user = await prisma.user.findUnique({ where: { email } });
+   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+     const err = new Error('Invalid email or password');
+@@ -108,16 +108,68 @@ async function login({ email, password, twoFactorCode, userAgent, ipAddress }) {
+     }
+   }
+ 
+-  // A user may belong to exactly one business as staff, or hold a cleaner
+-  // profile — resolve whichever applies so the token carries a businessId.
+-  const membership = await prisma.businessMember.findFirst({ where: { userId: user.id, isActive: true } });
+-  const cleanerProfile = membership
+-      ? null
+-      : await prisma.cleanerProfile.findFirst({ where: { userId: user.id, status: 'ACTIVE' } });
++  // A user can be affiliated with more than one business now — as staff at
++  // several businesses, a cleaner at several businesses, or both. Gather
++  // every active affiliation rather than assuming there's exactly one.
++  const affiliations = await listAffiliations(user.id);
+ 
+-  const businessId = membership?.businessId || cleanerProfile?.businessId || null;
++  if (affiliations.length > 1 && !businessId) {
++    // Ambiguous — let the client show a "choose a workspace" screen instead
++    // of silently picking one for them.
++    return { requiresBusinessSelection: true, affiliations };
++  }
++
++  const chosen = businessId
++    ? affiliations.find((a) => a.businessId === businessId)
++    : affiliations[0];
++  if (businessId && !chosen) {
++    const err = new Error('You are not affiliated with that business');
++    err.status = 403;
++    throw err;
++  }
++
++  return issueSession(user.id, chosen?.businessId || null, { userAgent, ipAddress });
++}
++
++/** Every business a user can currently act within, as staff and/or as a cleaner. */
++async function listAffiliations(userId) {
++  const [memberships, cleanerProfiles] = await Promise.all([
++    prisma.businessMember.findMany({
++      where: { userId, isActive: true },
++      include: { business: { select: { id: true, name: true, subdomain: true } } },
++    }),
++    prisma.cleanerProfile.findMany({
++      where: { userId, status: 'ACTIVE' },
++      include: { business: { select: { id: true, name: true, subdomain: true } } },
++    }),
++  ]);
++
++  return [
++    ...memberships.map((m) => ({
++      businessId: m.businessId,
++      businessName: m.business.name,
++      subdomain: m.business.subdomain,
++      role: m.role,
++    })),
++    ...cleanerProfiles.map((c) => ({
++      businessId: c.businessId,
++      businessName: c.business.name,
++      subdomain: c.business.subdomain,
++      role: 'CLEANER',
++    })),
++  ];
++}
+ 
+-  return issueSession(user.id, businessId, { userAgent, ipAddress });
++/** Re-issues a session for a specific business once login flagged ambiguity, or to switch workspace mid-session. */
++async function selectBusiness(userId, businessId, meta = {}) {
++  const affiliations = await listAffiliations(userId);
++  const chosen = affiliations.find((a) => a.businessId === businessId);
++  if (!chosen) {
++    const err = new Error('You are not affiliated with that business');
++    err.status = 403;
++    throw err;
++  }
++  return issueSession(userId, businessId, meta);
+ }
+ 
+ async function issueSession(userId, businessId, meta = {}) {
+@@ -127,6 +179,7 @@ async function issueSession(userId, businessId, meta = {}) {
+   await prisma.session.create({
+     data: {
+       userId,
++      businessId,
+       refreshToken,
+       userAgent: meta.userAgent,
+       ipAddress: meta.ipAddress,
+@@ -147,11 +200,13 @@ async function refresh(refreshToken) {
+ 
+   await prisma.session.delete({ where: { id: session.id } }); // rotate
+ 
+-  const membership = await prisma.businessMember.findFirst({ where: { userId: session.userId, isActive: true } });
+-  const cleanerProfile = membership
+-      ? null
+-      : await prisma.cleanerProfile.findFirst({ where: { userId: session.userId, status: 'ACTIVE' } });
+-  const businessId = membership?.businessId || cleanerProfile?.businessId || null;
++  // Stay in the same workspace this session was issued for, rather than
++  // re-resolving affiliations and potentially landing on a different
++  // business if the user has more than one. Only fall back to re-resolving
++  // if that affiliation is no longer valid (e.g. offboarded since login).
++  const affiliations = await listAffiliations(session.userId);
++  const stillValid = session.businessId && affiliations.some((a) => a.businessId === session.businessId);
++  const businessId = stillValid ? session.businessId : (affiliations[0]?.businessId || null);
+ 
+   return issueSession(session.userId, businessId);
+ }
+@@ -160,7 +215,7 @@ async function logout(refreshToken) {
+   await prisma.session.deleteMany({ where: { refreshToken } });
+ }
+ 
+-module.exports = { registerBusiness, login, refresh, logout };
++module.exports = { registerBusiness, login, refresh, logout, listAffiliations, selectBusiness };
+ 
+ // ----------------------- Password reset / email verify / 2FA -----------------
+ 
+diff --git a/src/modules/businesses/businesses.controller.js b/src/modules/businesses/businesses.controller.js
+index f8dd499..5a840e5 100644
+--- a/src/modules/businesses/businesses.controller.js
++++ b/src/modules/businesses/businesses.controller.js
+@@ -144,4 +144,25 @@ async function updateHours(req, res, next) {
+   }
+ }
+ 
+-module.exports = { list, update, getBranding, updateBranding, addAddress, updateAddress, removeAddress, listServiceAreas, createServiceArea, updateServiceArea, deleteServiceArea, listHours, updateHours, getStripeConnectStatus, startStripeConnectOnboarding, refreshStripeConnectStatus };
++async function listLocations(req, res, next) {
++  try {
++    // req.businessId here is the caller's own business — for a franchise
++    // HQ that's the parent, so this lists its locations directly (not an
++    // override, since listing your own locations needs no special grant).
++    const locations = await service.listLocations(req.businessId);
++    return success(res, 200, locations);
++  } catch (err) {
++    next(err);
++  }
++}
++
++async function createLocation(req, res, next) {
++  try {
++    const location = await service.createLocation(req.businessId, req.user.id, req.body);
++    return success(res, 201, location, 'Location created');
++  } catch (err) {
++    next(err);
++  }
++}
++
++module.exports = { list, update, getBranding, updateBranding, addAddress, updateAddress, removeAddress, listServiceAreas, createServiceArea, updateServiceArea, deleteServiceArea, listHours, updateHours, getStripeConnectStatus, startStripeConnectOnboarding, refreshStripeConnectStatus, listLocations, createLocation };
+diff --git a/src/modules/businesses/businesses.routes.js b/src/modules/businesses/businesses.routes.js
+index 9e9efbd..195e533 100644
+--- a/src/modules/businesses/businesses.routes.js
++++ b/src/modules/businesses/businesses.routes.js
+@@ -31,4 +31,11 @@ router.delete('/service-areas/:id', controller.deleteServiceArea);
+ router.get('/hours', controller.listHours);
+ router.put('/hours', controller.updateHours);
+ 
++// Franchise / multi-location. requireRole allows SUPER_ADMIN through
++// automatically; any BUSINESS_MANAGER attempt is rejected since adding or
++// listing locations is an ownership-level decision, not day-to-day ops.
++const { requireRole } = require('../../middleware/authenticate');
++router.get('/locations', requireRole('BUSINESS_OWNER', 'ORG_ADMIN'), controller.listLocations);
++router.post('/locations', requireRole('BUSINESS_OWNER', 'ORG_ADMIN'), controller.createLocation);
++
+ module.exports = router;
+diff --git a/src/modules/businesses/businesses.service.js b/src/modules/businesses/businesses.service.js
+index 2fa51eb..7405892 100644
+--- a/src/modules/businesses/businesses.service.js
++++ b/src/modules/businesses/businesses.service.js
+@@ -1,4 +1,77 @@
+ const prisma = require('../../config/database');
++const { audit } = require('../../utils/audit');
++
++// ============================================================
++// FRANCHISE / MULTI-LOCATION
++// ============================================================
++//
++// A "location" is a full Business row like any other — its own cleaners,
++// customers, services, bookings, and widget subdomain — with
++// parentBusinessId pointing at the HQ/franchise account. Nothing about
++// tenant isolation changes for a location's day-to-day operation; the only
++// new capability is that the HQ owner (or an ORG_ADMIN) can list/create
++// locations and switch into one via scopeToBusiness's override path.
++
++async function listLocations(parentBusinessId) {
++  return prisma.business.findMany({
++    where: { parentBusinessId },
++    select: { id: true, name: true, subdomain: true, timezone: true, isActive: true, createdAt: true },
++    orderBy: { createdAt: 'asc' },
++  });
++}
++
++async function createLocation(parentBusinessId, actorUserId, { name, subdomain, timezone }) {
++  const parent = await prisma.business.findUnique({ where: { id: parentBusinessId } });
++  if (!parent) {
++    const err = new Error('Business not found');
++    err.status = 404;
++    throw err;
++  }
++  // A location can't itself be a franchise parent — keep the hierarchy one
++  // level deep, which covers the real-world "HQ + branches" shape without
++  // open-ended recursive rollups.
++  if (parent.parentBusinessId) {
++    const err = new Error('A location cannot itself have sub-locations');
++    err.status = 422;
++    throw err;
++  }
++
++  const subdomainTaken = await prisma.business.findUnique({ where: { subdomain } });
++  if (subdomainTaken) {
++    const err = new Error('That subdomain is already taken');
++    err.status = 409;
++    throw err;
++  }
++
++  const location = await prisma.business.create({
++    data: {
++      name,
++      subdomain,
++      timezone: timezone || parent.timezone,
++      parentBusinessId,
++      branding: { create: {} },
++      hours: {
++        create: Array.from({ length: 7 }, (_, dayOfWeek) => ({
++          dayOfWeek,
++          openTime: '08:00',
++          closeTime: '18:00',
++          isClosed: dayOfWeek === 0,
++        })),
++      },
++    },
++  });
++
++  await audit({
++    businessId: parentBusinessId,
++    actorUserId,
++    action: 'LOCATION_CREATED',
++    entityType: 'Business',
++    entityId: location.id,
++    metadata: { name, subdomain },
++  });
++
++  return location;
++}
+ 
+ async function listBusinesses(businessId) {
+   // For the businesses route (tenant-scoped), return the current business
+@@ -152,6 +225,8 @@ async function updateHours(businessId, hours) {
+ }
+ 
+ module.exports = {
++  listLocations,
++  createLocation,
+   listBusinesses,
+   updateBusiness,
+   getBranding,
+diff --git a/src/modules/cleaners/cleaners.controller.js b/src/modules/cleaners/cleaners.controller.js
+index 3a96df0..67e3e48 100644
+--- a/src/modules/cleaners/cleaners.controller.js
++++ b/src/modules/cleaners/cleaners.controller.js
+@@ -55,4 +55,17 @@ async function clockOut(req, res, next) {
+   }
+ }
+ 
+-module.exports = { list, onboard, offboard, updateAvailability, clockIn, clockOut };
+\ No newline at end of file
++async function performance(req, res, next) {
++  try {
++    const data = await service.getCleanerPerformance(req.businessId, req.params.id, {
++      from: req.query.from,
++      to: req.query.to,
++    });
++    if (!data) return success(res, 200, { cleanerId: req.params.id, jobs: 0, completed: 0, revenueCents: 0, avgRating: null, reviewCount: 0, lowRatingCount: 0 });
++    return success(res, 200, data);
++  } catch (err) {
++    next(err);
++  }
++}
++
++module.exports = { list, onboard, offboard, updateAvailability, clockIn, clockOut, performance };
+\ No newline at end of file
+diff --git a/src/modules/cleaners/cleaners.routes.js b/src/modules/cleaners/cleaners.routes.js
+index 21bbf89..88c267f 100644
+--- a/src/modules/cleaners/cleaners.routes.js
++++ b/src/modules/cleaners/cleaners.routes.js
+@@ -37,4 +37,9 @@ router.put(
+ router.post('/:id/clock-in', [body('assignmentId').notEmpty(), body('lat').isFloat(), body('lng').isFloat()], validate, controller.clockIn);
+ router.post('/:id/clock-out', [body('assignmentId').notEmpty(), body('lat').isFloat(), body('lng').isFloat()], validate, controller.clockOut);
+ 
++// Per-cleaner quality/throughput snapshot — average rating, review count,
++// low-rating count, jobs, revenue. Staff-only; a cleaner's ratings aren't
++// exposed to the cleaner themselves through this endpoint.
++router.get('/:id/performance', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.performance);
++
+ module.exports = router;
+diff --git a/src/modules/cleaners/cleaners.service.js b/src/modules/cleaners/cleaners.service.js
+index 2696fce..2a9cf82 100644
+--- a/src/modules/cleaners/cleaners.service.js
++++ b/src/modules/cleaners/cleaners.service.js
+@@ -11,8 +11,10 @@ const notifications = require('../notifications/notifications.service');
+  */
+ async function onboardCleaner(businessId, actorUserId, { firstName, lastName, email, phone, hireDate }) {
+   let user = await prisma.user.findUnique({ where: { email } });
++  let isNewUser = false;
+ 
+   if (!user) {
++    isNewUser = true;
+     const tempPassword = crypto.randomBytes(12).toString('hex');
+     user = await prisma.user.create({
+       data: {
+@@ -31,9 +33,15 @@ async function onboardCleaner(businessId, actorUserId, { firstName, lastName, em
+     }
+   }
+ 
+-  const existingProfile = await prisma.cleanerProfile.findUnique({ where: { userId: user.id } });
+-  if (existingProfile) {
+-    const err = new Error('This person already has a cleaner profile');
++  // A person can hold at most one cleaner profile PER BUSINESS, but is free
++  // to be onboarded by any number of different businesses over time (or
++  // concurrently) — e.g. leaving Company A and joining Company B under the
++  // same email no longer collides with the (now historical) profile at A.
++  const existingProfile = await prisma.cleanerProfile.findUnique({
++    where: { businessId_userId: { businessId, userId: user.id } },
++  });
++  if (existingProfile && existingProfile.status !== 'OFFBOARDED') {
++    const err = new Error('This person already has a cleaner profile at this business');
+     err.status = 409;
+     throw err;
+   }
+@@ -49,21 +57,35 @@ async function onboardCleaner(businessId, actorUserId, { firstName, lastName, em
+     }
+   }
+ 
+-  const profile = await prisma.cleanerProfile.create({
+-    data: {
+-      businessId,
+-      userId: user.id,
+-      status: 'ACTIVE',
+-      hireDate: hireDate ? new Date(hireDate) : new Date(),
+-    },
+-  });
++  // If they'd previously been offboarded by this same business, re-activate
++  // that row (keeps their assignment/review/document history attached)
++  // instead of creating a second, disconnected profile.
++  const profile = existingProfile
++    ? await prisma.cleanerProfile.update({
++        where: { id: existingProfile.id },
++        data: {
++          status: 'ACTIVE',
++          hireDate: hireDate ? new Date(hireDate) : new Date(),
++          offboardedAt: null,
++          offboardedReason: null,
++        },
++      })
++    : await prisma.cleanerProfile.create({
++        data: {
++          businessId,
++          userId: user.id,
++          status: 'ACTIVE',
++          hireDate: hireDate ? new Date(hireDate) : new Date(),
++        },
++      });
+ 
+   await audit({
+     businessId,
+     actorUserId,
+-    action: 'CLEANER_ONBOARDED',
++    action: existingProfile ? 'CLEANER_REONBOARDED' : 'CLEANER_ONBOARDED',
+     entityType: 'CleanerProfile',
+     entityId: profile.id,
++    metadata: { reusedExistingUser: !isNewUser },
+   });
+ 
+   return profile;
+@@ -106,6 +128,24 @@ async function listCleaners(businessId, { status } = {}) {
+   });
+ }
+ 
++/**
++ * Quality + throughput snapshot for a single cleaner — average rating,
++ * review count, low-rating count, jobs, and revenue. Delegates to the same
++ * logic the business-wide cleaner-performance report uses so the numbers
++ * never drift apart between the two views.
++ */
++async function getCleanerPerformance(businessId, cleanerId, { from, to } = {}) {
++  const profile = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId } });
++  if (!profile) {
++    const err = new Error('Cleaner not found for this business');
++    err.status = 404;
++    throw err;
++  }
++  const reportsService = require('../reports/reports.service');
++  const all = await reportsService.cleanerPerformance(businessId, { from, to });
++  return all.find((r) => r.cleanerId === cleanerId) || null;
++}
++
+ async function setAvailability(businessId, cleanerId, slots) {
+   const profile = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId } });
+   if (!profile) {
+@@ -124,7 +164,7 @@ async function setAvailability(businessId, cleanerId, slots) {
+   return prisma.cleanerAvailability.findMany({ where: { cleanerId } });
+ }
+ 
+-module.exports = { onboardCleaner, offboardCleaner, listCleaners, setAvailability };
++module.exports = { onboardCleaner, offboardCleaner, listCleaners, setAvailability, getCleanerPerformance };
+ 
+ async function clockIn(businessId, cleanerId, assignmentId, actorUserId, { lat, lng }) {
+   const assignment = await prisma.bookingAssignment.findFirst({ where: { id: assignmentId }, include: { booking: true, cleaner: true } });
+@@ -165,6 +205,15 @@ async function clockIn(businessId, cleanerId, assignmentId, actorUserId, { lat,
+ 
+   const updated = await prisma.bookingAssignment.update({ where: { id: assignmentId }, data: { checkedInAt: new Date(), checkInLat: lat || null, checkInLng: lng || null } });
+ 
++  // Record this as the cleaner's best-known live position for dispatch
++  // ranking, so the next suggestion isn't guessing from stale job history.
++  if (lat != null && lng != null) {
++    await prisma.cleanerProfile.update({
++      where: { id: cleanerId },
++      data: { lastKnownLat: lat, lastKnownLng: lng, lastKnownAt: new Date() },
++    });
++  }
++
+   await audit({ businessId, actorUserId, action: 'CLEANER_CHECKED_IN', entityType: 'BookingAssignment', entityId: assignmentId, metadata: { lat, lng } });
+ 
+   // notify booking owner/business
+@@ -199,6 +248,13 @@ async function clockOut(businessId, cleanerId, assignmentId, actorUserId, { lat,
+ 
+   const updated = await prisma.bookingAssignment.update({ where: { id: assignmentId }, data: { checkedOutAt: new Date() } });
+ 
++  if (lat != null && lng != null) {
++    await prisma.cleanerProfile.update({
++      where: { id: cleanerId },
++      data: { lastKnownLat: lat, lastKnownLng: lng, lastKnownAt: new Date() },
++    });
++  }
++
+   await audit({ businessId, actorUserId, action: 'CLEANER_CHECKED_OUT', entityType: 'BookingAssignment', entityId: assignmentId, metadata: { lat, lng } });
+ 
+   return updated;
+diff --git a/src/modules/customerPortal/customerPortal.service.js b/src/modules/customerPortal/customerPortal.service.js
+index 3da7701..a000868 100644
+--- a/src/modules/customerPortal/customerPortal.service.js
++++ b/src/modules/customerPortal/customerPortal.service.js
+@@ -208,11 +208,22 @@ async function leaveReview(businessId, customerId, bookingId, { rating, comment
+     err.status = 422;
+     throw err;
+   }
++
++  // Attribute the review to whichever cleaner actually did the job. A
++  // booking can in principle carry more than one assignment (reassignment
++  // history) — the most recently assigned cleaner is the one who completed
++  // it, so that's who the rating reflects.
++  const primaryAssignment = await prisma.bookingAssignment.findFirst({
++    where: { bookingId },
++    orderBy: { assignedAt: 'desc' },
++  });
++
+   return prisma.review.create({
+     data: {
+       businessId,
+       bookingId,
+       customerId,
++      cleanerId: primaryAssignment?.cleanerId || null,
+       rating: r,
+       comment: comment || null,
+     },
+diff --git a/src/modules/dispatch/dispatch.service.js b/src/modules/dispatch/dispatch.service.js
+index d42e419..9a0362f 100644
+--- a/src/modules/dispatch/dispatch.service.js
++++ b/src/modules/dispatch/dispatch.service.js
+@@ -1,4 +1,5 @@
+ const prisma = require('../../config/database');
++const { audit } = require('../../utils/audit');
+ 
+ async function listDispatchItems(businessId) {
+   // Return recent booking assignments for dispatch dashboard
+@@ -21,6 +22,7 @@ async function createAssignment(businessId, bookingId, cleanerId, actorUserId) {
+   }
+ 
+   let chosenCleaner = cleanerId;
++  let pickReason = 'manual';
+   if (chosenCleaner) {
+     const cleaner = await prisma.cleanerProfile.findFirst({ where: { id: chosenCleaner, businessId, status: 'ACTIVE' } });
+     if (!cleaner) {
+@@ -30,18 +32,39 @@ async function createAssignment(businessId, bookingId, cleanerId, actorUserId) {
+     }
+   }
+   if (!chosenCleaner) {
+-    // find candidates
+-    const candidates = await scheduler.findAvailableCleaners(businessId, booking.scheduledStart, booking.scheduledEnd, { lat: booking.latitude, lng: booking.longitude });
++    // Ranked by travel distance/ETA with workload as a tiebreaker — see
++    // lib/scheduler.js. The top candidate is an actual recommendation now,
++    // not just whichever row Postgres happened to return first.
++    const candidates = await scheduler.findAvailableCleaners(businessId, booking.scheduledStart, booking.scheduledEnd, {
++      lat: booking.latitude,
++      lng: booking.longitude,
++      includeEta: true,
++    });
+     if (!candidates || candidates.length === 0) {
+       const err = new Error('No available cleaners found');
+       err.status = 409;
+       throw err;
+     }
+-    chosenCleaner = candidates[0].id;
++    const top = candidates[0];
++    chosenCleaner = top.cleaner.id;
++    pickReason = JSON.stringify({
++      distanceMeters: top.distanceMeters,
++      etaSeconds: top.etaSeconds,
++      locationSource: top.locationSource,
++      workload: top.workload,
++    });
+   }
+ 
+   const assignment = await prisma.bookingAssignment.create({ data: { bookingId, cleanerId: chosenCleaner } });
+   await prisma.booking.update({ where: { id: bookingId }, data: { status: 'ASSIGNED' } });
++  await audit({
++    businessId,
++    actorUserId,
++    action: 'DISPATCH_AUTO_ASSIGNED',
++    entityType: 'BookingAssignment',
++    entityId: assignment.id,
++    metadata: { cleanerId: chosenCleaner, reason: pickReason },
++  });
+   return assignment;
+ }
+ 
+@@ -72,32 +95,26 @@ async function suggestCleaners(businessId, bookingId, limit = 5) {
+   }
+ 
+   const scheduler = require('../../lib/scheduler');
+-  const { distanceMeters } = require('../../utils/geo');
+-
+-  // request ETA enrichment from scheduler when possible
+-  const candidates = await scheduler.findAvailableCleaners(businessId, booking.scheduledStart, booking.scheduledEnd, { lat: booking.latitude, lng: booking.longitude, includeEta: true });
+-
+-  const enriched = await Promise.all(candidates.map(async (c) => {
+-    // c may be either a cleaner object or enriched { cleaner, distanceMeters, etaSeconds }
+-    let cleaner = c.cleaner || c;
+-    let distanceMetersVal = c.distanceMeters || null;
+-    let etaMinutes = c.etaSeconds ? Math.round(c.etaSeconds / 60) : null;
+ 
+-    // fallback: if scheduler didn't compute distance, compute lightweight heuristic
+-    if (distanceMetersVal == null && booking.latitude != null && booking.longitude != null) {
+-      const lastAssignment = await prisma.bookingAssignment.findFirst({ where: { cleanerId: cleaner.id }, orderBy: { assignedAt: 'desc' }, include: { booking: true } });
+-      if (lastAssignment && lastAssignment.booking && lastAssignment.booking.latitude != null && lastAssignment.booking.longitude != null) {
+-        distanceMetersVal = distanceMeters(lastAssignment.booking.latitude, lastAssignment.booking.longitude, booking.latitude, booking.longitude);
+-      } else if (cleaner.user && cleaner.user.latitude && cleaner.user.longitude) {
+-        distanceMetersVal = distanceMeters(cleaner.user.latitude, cleaner.user.longitude, booking.latitude, booking.longitude);
+-      }
+-    }
++  // scheduler.findAvailableCleaners already resolves each cleaner's
++  // best-known location (live > last job > service area center), computes
++  // distance/ETA, and ranks by distance with workload as a tiebreaker — no
++  // need to duplicate that here.
++  const candidates = await scheduler.findAvailableCleaners(businessId, booking.scheduledStart, booking.scheduledEnd, {
++    lat: booking.latitude,
++    lng: booking.longitude,
++    includeEta: true,
++  });
+ 
+-    return { id: cleaner.id, user: cleaner.user, availability: cleaner.availability, distanceMeters: distanceMetersVal, etaMinutes };
++  return candidates.slice(0, limit).map((c) => ({
++    id: c.cleaner.id,
++    user: c.cleaner.user,
++    availability: c.cleaner.availability,
++    distanceMeters: c.distanceMeters,
++    etaMinutes: c.etaSeconds != null ? Math.round(c.etaSeconds / 60) : null,
++    locationSource: c.locationSource,
++    currentWorkload: c.workload,
+   }));
+-
+-  enriched.sort((a, b) => (a.etaMinutes != null && b.etaMinutes != null) ? a.etaMinutes - b.etaMinutes : (a.distanceMeters || 0) - (b.distanceMeters || 0));
+-  return enriched.slice(0, limit);
+ }
+ 
+ module.exports.suggestCleaners = suggestCleaners;
+diff --git a/src/modules/reports/reports.controller.js b/src/modules/reports/reports.controller.js
+index bd31650..eeb7d79 100644
+--- a/src/modules/reports/reports.controller.js
++++ b/src/modules/reports/reports.controller.js
+@@ -54,4 +54,15 @@ async function auditTrail(req, res, next) {
+   }
+ }
+ 
+-module.exports = { list, kpis, revenue, cleanerPerf, auditTrail };
++async function orgSummary(req, res, next) {
++  try {
++    // req.businessId is the caller's own business — for an org-level role
++    // that's the parent, so this rolls up its own locations directly.
++    const data = await service.orgSummary(req.businessId, { from: req.query.from, to: req.query.to });
++    return success(res, 200, data);
++  } catch (err) {
++    next(err);
++  }
++}
++
++module.exports = { list, kpis, revenue, cleanerPerf, auditTrail, orgSummary };
+diff --git a/src/modules/reports/reports.routes.js b/src/modules/reports/reports.routes.js
+index 97b5a95..9dc9c9c 100644
+--- a/src/modules/reports/reports.routes.js
++++ b/src/modules/reports/reports.routes.js
+@@ -13,4 +13,8 @@ router.get('/revenue', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), contro
+ router.get('/cleaner-performance', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.cleanerPerf);
+ router.get('/audit-trail', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.auditTrail);
+ 
++// Franchise rollup — only meaningful for a parent business, but harmless
++// (empty locations array) if called on a standalone one.
++router.get('/org-summary', requireRole('BUSINESS_OWNER', 'ORG_ADMIN'), controller.orgSummary);
++
+ module.exports = router;
+diff --git a/src/modules/reports/reports.service.js b/src/modules/reports/reports.service.js
+index 47ecc7c..605e9fe 100644
+--- a/src/modules/reports/reports.service.js
++++ b/src/modules/reports/reports.service.js
+@@ -94,6 +94,43 @@ async function generateKPIs(businessId, { from, to } = {}) {
+   };
+ }
+ 
++/**
++ * Rolls KPIs up across every location under a franchise parent, plus the
++ * per-location breakdown so an owner can see which branch is driving (or
++ * dragging) the aggregate. Locations remain operationally independent —
++ * this is a read-only summary, not a merged dataset.
++ */
++async function orgSummary(parentBusinessId, { from, to } = {}) {
++  const locations = await prisma.business.findMany({
++    where: { parentBusinessId },
++    select: { id: true, name: true, subdomain: true },
++  });
++
++  const perLocation = await Promise.all(
++    locations.map(async (loc) => ({
++      businessId: loc.id,
++      name: loc.name,
++      subdomain: loc.subdomain,
++      kpis: await generateKPIs(loc.id, { from, to }),
++    }))
++  );
++
++  const totals = perLocation.reduce(
++    (acc, l) => ({
++      total: acc.total + l.kpis.total,
++      completed: acc.completed + l.kpis.completed,
++      cancelled: acc.cancelled + l.kpis.cancelled,
++      revenueCents: acc.revenueCents + l.kpis.revenueCents,
++      collectedCents: acc.collectedCents + l.kpis.collectedCents,
++      activeCleaners: acc.activeCleaners + l.kpis.activeCleaners,
++      totalCustomers: acc.totalCustomers + l.kpis.totalCustomers,
++    }),
++    { total: 0, completed: 0, cancelled: 0, revenueCents: 0, collectedCents: 0, activeCleaners: 0, totalCustomers: 0 }
++  );
++
++  return { locationCount: locations.length, totals, locations: perLocation };
++}
++
+ async function revenueByDay(businessId, { from, to } = {}) {
+   const where = { businessId, status: 'COMPLETED' };
+   if (from || to) {
+@@ -136,6 +173,24 @@ async function cleanerPerformance(businessId, { from, to } = {}) {
+       .filter((a) => a.booking.status === 'COMPLETED')
+       .reduce((s, a) => s + (a.booking.quotedPriceCents || 0), 0);
+     const onTimeCheckins = assignments.filter((a) => a.checkedInAt).length;
++
++    // Quality: this is what makes cleaner performance more than a
++    // throughput/revenue count — customer ratings tied directly to this
++    // cleaner via Review.cleanerId (see leaveReview), not inferred through
++    // the booking each time.
++    const reviewWhere = { cleanerId: c.id };
++    if (from || to) {
++      reviewWhere.createdAt = {};
++      if (from) reviewWhere.createdAt.gte = new Date(from);
++      if (to) reviewWhere.createdAt.lte = new Date(to);
++    }
++    const reviewAgg = await prisma.review.aggregate({
++      where: reviewWhere,
++      _avg: { rating: true },
++      _count: { rating: true },
++    });
++    const lowRatings = await prisma.review.count({ where: { ...reviewWhere, rating: { lte: 2 } } });
++
+     results.push({
+       cleanerId: c.id,
+       name: `${c.user.firstName} ${c.user.lastName}`,
+@@ -145,6 +200,9 @@ async function cleanerPerformance(businessId, { from, to } = {}) {
+       completed,
+       revenueCents,
+       checkIns: onTimeCheckins,
++      avgRating: reviewAgg._avg.rating != null ? Math.round(reviewAgg._avg.rating * 100) / 100 : null,
++      reviewCount: reviewAgg._count.rating,
++      lowRatingCount: lowRatings,
+     });
+   }
+   results.sort((a, b) => b.revenueCents - a.revenueCents);
+@@ -225,4 +283,5 @@ module.exports = {
+   revenueByDay,
+   cleanerPerformance,
+   auditTrail,
++  orgSummary,
+ };
+diff --git a/src/modules/reviews/reviews.controller.js b/src/modules/reviews/reviews.controller.js
+index a4356de..7da14b1 100644
+--- a/src/modules/reviews/reviews.controller.js
++++ b/src/modules/reviews/reviews.controller.js
+@@ -3,7 +3,7 @@ const { success } = require('../../utils/response');
+ 
+ async function list(req, res, next) {
+   try {
+-    const reviews = await service.listReviews(req.businessId);
++    const reviews = await service.listReviews(req.businessId, { cleanerId: req.query.cleanerId });
+     return success(res, 200, reviews);
+   } catch (err) {
+     next(err);
+diff --git a/src/modules/reviews/reviews.service.js b/src/modules/reviews/reviews.service.js
+index 42c0e18..dd5540a 100644
+--- a/src/modules/reviews/reviews.service.js
++++ b/src/modules/reviews/reviews.service.js
+@@ -1,13 +1,27 @@
+ const prisma = require('../../config/database');
+ 
+-async function listReviews(businessId) {
+-  return prisma.review.findMany({ where: { businessId }, orderBy: { createdAt: 'desc' }, take: 200 });
++async function listReviews(businessId, { cleanerId } = {}) {
++  return prisma.review.findMany({
++    where: { businessId, ...(cleanerId ? { cleanerId } : {}) },
++    orderBy: { createdAt: 'desc' },
++    take: 200,
++  });
+ }
+ 
+-module.exports = { listReviews };
+-
+ async function createReview(businessId, payload) {
+-  const created = await prisma.review.create({ data: { businessId, ...payload } });
++  // Manually-logged reviews (e.g. backfilled from an external channel) may
++  // not specify which cleaner did the job — infer it the same way the
++  // customer portal does, from the booking's most recent assignment,
++  // unless the caller already provided one explicitly.
++  let cleanerId = payload.cleanerId;
++  if (!cleanerId && payload.bookingId) {
++    const assignment = await prisma.bookingAssignment.findFirst({
++      where: { bookingId: payload.bookingId },
++      orderBy: { assignedAt: 'desc' },
++    });
++    cleanerId = assignment?.cleanerId || null;
++  }
++  const created = await prisma.review.create({ data: { businessId, ...payload, cleanerId } });
+   return created;
+ }
+ 

@@ -4,6 +4,7 @@ const { authenticate } = require('../../middleware/authenticate');
 const { scopeToBusiness } = require('../../middleware/scopeToBusiness');
 
 const router = express.Router();
+const { requireRole } = require('../../middleware/authenticate');
 
 router.use(authenticate, scopeToBusiness);
 
@@ -31,4 +32,11 @@ router.delete('/service-areas/:id', controller.deleteServiceArea);
 router.get('/hours', controller.listHours);
 router.put('/hours', controller.updateHours);
 
+// Franchise / multi-location. requireRole allows SUPER_ADMIN through
+// automatically; any BUSINESS_MANAGER attempt is rejected since adding or
+// listing locations is an ownership-level decision, not day-to-day ops.
+router.get('/locations', requireRole('BUSINESS_OWNER', 'ORG_ADMIN'), controller.listLocations);
+router.post('/locations', requireRole('BUSINESS_OWNER', 'ORG_ADMIN'), controller.createLocation);
+
 module.exports = router;
+

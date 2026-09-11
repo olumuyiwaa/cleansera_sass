@@ -55,4 +55,18 @@ async function clockOut(req, res, next) {
   }
 }
 
-module.exports = { list, onboard, offboard, updateAvailability, clockIn, clockOut };
+
+async function performance(req, res, next) {
+  try {
+    const data = await service.getCleanerPerformance(req.businessId, req.params.id, {
+      from: req.query.from,
+      to: req.query.to,
+    });
+    if (!data) return success(res, 200, { cleanerId: req.params.id, jobs: 0, completed: 0, revenueCents: 0, avgRating: null, reviewCount: 0, lowRatingCount: 0 });
+    return success(res, 200, data);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { list, onboard, offboard, updateAvailability, clockIn, clockOut, performance };

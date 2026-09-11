@@ -36,7 +36,7 @@ model User {
   passwordResets      PasswordReset[]
   otpCodes            OtpCode[]
   businessMemberships BusinessMember[]
-  cleanerProfile      CleanerProfile?
+  cleanerProfiles     CleanerProfile[]
   auditLogs           AuditLog[]
 
   @@index([email])
@@ -47,6 +47,12 @@ model Session {
   userId       String
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   refreshToken String   @unique
+  // The business workspace this session was issued for. A user with
+  // affiliations to more than one business (e.g. a cleaner working for two
+  // companies) can hold concurrent sessions in different workspaces; refresh
+  // keeps you in the same one instead of re-resolving to "whichever
+  // affiliation happens to come back first".
+  businessId   String?
   userAgent    String?
   ipAddress    String?
   expiresAt    DateTime
@@ -97,6 +103,15 @@ model Business {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  // Franchise / multi-location support. Each location is still a full,
+  // independently-scoped tenant (its own cleaners, customers, bookings,
+  // widget subdomain) — nothing about the isolation model above changes.
+  // parentBusinessId only adds a rollup: an ORG_ADMIN member of the parent
+  // can view aggregated reporting and switch between its locations.
+  parentBusinessId String?
+  parentBusiness    Business?  @relation("BusinessLocations", fields: [parentBusinessId], references: [id], onDelete: SetNull)
+  locations         Business[] @relation("BusinessLocations")
+
   // Stripe Connect — required before this business can accept job-level
   // customer payments through CleanSera. Money for a paid booking is
   // transferred to this connected account (minus the platform fee), never
@@ -129,6 +144,7 @@ model Business {
   cleanerDocuments   CleanerDocument[]
 
   @@index([subdomain])
+  @@index([parentBusinessId])
 }
 
 model BusinessBranding {
@@ -300,22 +316,36 @@ model CleanerProfile {
   id               String        @id @default(cuid())
   businessId       String
   business         Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  userId           String        @unique
+  userId           String
   user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   status           CleanerStatus @default(PENDING)
   hireDate         DateTime?
   offboardedAt     DateTime?
   offboardedReason String?
   serviceAreaIds   String[] // ServiceArea ids this cleaner covers
+
+  // Best-known live position, updated on clock-in/clock-out. Used by
+  // dispatch for real proximity ranking instead of inferring location from
+  // wherever the cleaner's last completed job happened to be.
+  lastKnownLat Float?
+  lastKnownLng Float?
+  lastKnownAt  DateTime?
+
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
   availability CleanerAvailability[]
   assignments  BookingAssignment[]
   documents    CleanerDocument[]
+  reviews      Review[]
 
+  // One profile per person per business — not per person globally. A
+  // cleaner offboarded by Business A can be onboarded fresh by Business B
+  // (or re-onboarded by A) without an email collision.
+  @@unique([businessId, userId])
   @@index([businessId])
   @@index([businessId, status])
+  @@index([userId])
 }
 
 model CleanerAvailability {
@@ -557,18 +587,24 @@ model JobPhoto {
 // ============================================================
 
 model Review {
-  id         String   @id @default(cuid())
+  id         String          @id @default(cuid())
   businessId String
-  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  bookingId  String   @unique
-  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  business   Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  bookingId  String          @unique
+  booking    Booking         @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   customerId String
-  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customer   Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  // Backfilled from the booking's primary assignment at review time. Nullable
+  // because a booking can in principle be reviewed with no assignment on
+  // record (e.g. data imported from elsewhere) — never block a review over it.
+  cleanerId  String?
+  cleaner    CleanerProfile? @relation(fields: [cleanerId], references: [id], onDelete: SetNull)
   rating     Int // 1-5
   comment    String?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime        @default(now())
 
   @@index([businessId])
+  @@index([cleanerId])
 }
 
 // ============================================================

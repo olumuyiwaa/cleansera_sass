@@ -31,9 +31,11 @@ async function onboardCleaner(businessId, actorUserId, { firstName, lastName, em
     }
   }
 
-  const existingProfile = await prisma.cleanerProfile.findUnique({ where: { userId: user.id } });
-  if (existingProfile) {
-    const err = new Error('This person already has a cleaner profile');
+  const existingProfile = await prisma.cleanerProfile.findUnique({
+    where: { businessId_userId: { businessId, userId: user.id } },
+  });
+  if (existingProfile && existingProfile.status !== 'OFFBOARDED') {
+    const err = new Error('This person already has a cleaner profile at this business');
     err.status = 409;
     throw err;
   }
@@ -49,19 +51,29 @@ async function onboardCleaner(businessId, actorUserId, { firstName, lastName, em
     }
   }
 
-  const profile = await prisma.cleanerProfile.create({
-    data: {
-      businessId,
-      userId: user.id,
-      status: 'ACTIVE',
-      hireDate: hireDate ? new Date(hireDate) : new Date(),
-    },
-  });
+  const profile = existingProfile
+    ? await prisma.cleanerProfile.update({
+        where: { id: existingProfile.id },
+        data: {
+          status: 'ACTIVE',
+          hireDate: hireDate ? new Date(hireDate) : new Date(),
+          offboardedAt: null,
+          offboardedReason: null,
+        },
+      })
+    : await prisma.cleanerProfile.create({
+        data: {
+          businessId,
+          userId: user.id,
+          status: 'ACTIVE',
+          hireDate: hireDate ? new Date(hireDate) : new Date(),
+        },
+      });
 
   await audit({
     businessId,
     actorUserId,
-    action: 'CLEANER_ONBOARDED',
+    action: existingProfile ? 'CLEANER_REONBOARDED' : 'CLEANER_ONBOARDED',
     entityType: 'CleanerProfile',
     entityId: profile.id,
   });
@@ -124,7 +136,26 @@ async function setAvailability(businessId, cleanerId, slots) {
   return prisma.cleanerAvailability.findMany({ where: { cleanerId } });
 }
 
-module.exports = { onboardCleaner, offboardCleaner, listCleaners, setAvailability };
+
+/**
+ * Quality + throughput snapshot for a single cleaner — average rating,
+ * review count, low-rating count, jobs, and revenue. Delegates to the same
+ * logic the business-wide cleaner-performance report uses so the numbers
+ * never drift apart between the two views.
+ */
+async function getCleanerPerformance(businessId, cleanerId, { from, to } = {}) {
+  const profile = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId } });
+  if (!profile) {
+    const err = new Error('Cleaner not found for this business');
+    err.status = 404;
+    throw err;
+  }
+  const reportsService = require('../reports/reports.service');
+  const all = await reportsService.cleanerPerformance(businessId, { from, to });
+  return all.find((r) => r.cleanerId === cleanerId) || null;
+}
+
+module.exports = { onboardCleaner, offboardCleaner, listCleaners, setAvailability, getCleanerPerformance };
 
 async function clockIn(businessId, cleanerId, assignmentId, actorUserId, { lat, lng }) {
   const assignment = await prisma.bookingAssignment.findFirst({ where: { id: assignmentId }, include: { booking: true, cleaner: true } });
@@ -165,6 +196,16 @@ async function clockIn(businessId, cleanerId, assignmentId, actorUserId, { lat, 
 
   const updated = await prisma.bookingAssignment.update({ where: { id: assignmentId }, data: { checkedInAt: new Date(), checkInLat: lat || null, checkInLng: lng || null } });
 
+  
+  // Record this as the cleaner's best-known live position for dispatch
+  // ranking, so the next suggestion isn't guessing from stale job history.
+  if (lat != null && lng != null) {
+    await prisma.cleanerProfile.update({
+      where: { id: cleanerId },
+      data: { lastKnownLat: lat, lastKnownLng: lng, lastKnownAt: new Date() },
+    });
+  }
+
   await audit({ businessId, actorUserId, action: 'CLEANER_CHECKED_IN', entityType: 'BookingAssignment', entityId: assignmentId, metadata: { lat, lng } });
 
   // notify booking owner/business
@@ -198,6 +239,14 @@ async function clockOut(businessId, cleanerId, assignmentId, actorUserId, { lat,
   }
 
   const updated = await prisma.bookingAssignment.update({ where: { id: assignmentId }, data: { checkedOutAt: new Date() } });
+
+  
+  if (lat != null && lng != null) {
+    await prisma.cleanerProfile.update({
+      where: { id: cleanerId },
+      data: { lastKnownLat: lat, lastKnownLng: lng, lastKnownAt: new Date() },
+    });
+  }
 
   await audit({ businessId, actorUserId, action: 'CLEANER_CHECKED_OUT', entityType: 'BookingAssignment', entityId: assignmentId, metadata: { lat, lng } });
 

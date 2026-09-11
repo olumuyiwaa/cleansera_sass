@@ -69,7 +69,7 @@ async function registerBusiness({ businessName, subdomain, firstName, lastName, 
   return issueSession(result.user.id, result.business.id);
 }
 
-async function login({ email, password, twoFactorCode, userAgent, ipAddress }) {
+async function login({ email, password, twoFactorCode, businessId, userAgent, ipAddress }) {
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
     const err = new Error('Invalid email or password');
@@ -103,18 +103,66 @@ async function login({ email, password, twoFactorCode, userAgent, ipAddress }) {
     }
   }
 
-  const membership = await prisma.businessMember.findFirst({
-    where: { userId: user.id, isActive: true },
-  });
-  const cleanerProfile = membership
-      ? null
-      : await prisma.cleanerProfile.findFirst({
-        where: { userId: user.id, status: 'ACTIVE' },
-      });
+  // A user can be affiliated with more than one business now — as staff at
+  // several businesses, a cleaner at several businesses, or both.
+  const affiliations = await listAffiliations(user.id);
 
-  const businessId = membership?.businessId || cleanerProfile?.businessId || null;
+  if (affiliations.length > 1 && !businessId) {
+    // Ambiguous — let the client show a "choose a workspace" screen.
+    return { requiresBusinessSelection: true, affiliations };
+  }
 
-  return issueSession(user.id, businessId, { userAgent, ipAddress });
+  const chosen = businessId
+    ? affiliations.find((a) => a.businessId === businessId)
+    : affiliations[0];
+  if (businessId && !chosen) {
+    const err = new Error('You are not affiliated with that business');
+    err.status = 403;
+    throw err;
+  }
+
+  return issueSession(user.id, chosen?.businessId || null, { userAgent, ipAddress });
+}
+
+/** Every business a user can currently act within, as staff and/or as a cleaner. */
+async function listAffiliations(userId) {
+  const [memberships, cleanerProfiles] = await Promise.all([
+    prisma.businessMember.findMany({
+      where: { userId, isActive: true },
+      include: { business: { select: { id: true, name: true, subdomain: true } } },
+    }),
+    prisma.cleanerProfile.findMany({
+      where: { userId, status: 'ACTIVE' },
+      include: { business: { select: { id: true, name: true, subdomain: true } } },
+    }),
+  ]);
+
+  return [
+    ...memberships.map((m) => ({
+      businessId: m.businessId,
+      businessName: m.business.name,
+      subdomain: m.business.subdomain,
+      role: m.role,
+    })),
+    ...cleanerProfiles.map((c) => ({
+      businessId: c.businessId,
+      businessName: c.business.name,
+      subdomain: c.business.subdomain,
+      role: 'CLEANER',
+    })),
+  ];
+}
+
+/** Re-issues a session for a specific business (after ambiguous login or mid-session switch). */
+async function selectBusiness(userId, businessId, meta = {}) {
+  const affiliations = await listAffiliations(userId);
+  const chosen = affiliations.find((a) => a.businessId === businessId);
+  if (!chosen) {
+    const err = new Error('You are not affiliated with that business');
+    err.status = 403;
+    throw err;
+  }
+  return issueSession(userId, businessId, meta);
 }
 
 async function issueSession(userId, businessId, meta = {}) {
@@ -124,6 +172,7 @@ async function issueSession(userId, businessId, meta = {}) {
   await prisma.session.create({
     data: {
       userId,
+      businessId, // pin the session to this workspace
       refreshToken,
       userAgent: meta.userAgent,
       ipAddress: meta.ipAddress,
@@ -142,17 +191,12 @@ async function refresh(refreshToken) {
     throw err;
   }
 
-  await prisma.session.delete({ where: { id: session.id } });
+  await prisma.session.delete({ where: { id: session.id } }); // rotate
 
-  const membership = await prisma.businessMember.findFirst({
-    where: { userId: session.userId, isActive: true },
-  });
-  const cleanerProfile = membership
-      ? null
-      : await prisma.cleanerProfile.findFirst({
-        where: { userId: session.userId, status: 'ACTIVE' },
-      });
-  const businessId = membership?.businessId || cleanerProfile?.businessId || null;
+  // Stay in the same workspace this session was issued for.
+  const affiliations = await listAffiliations(session.userId);
+  const stillValid = session.businessId && affiliations.some((a) => a.businessId === session.businessId);
+  const businessId = stillValid ? session.businessId : (affiliations[0]?.businessId || null);
 
   return issueSession(session.userId, businessId);
 }
@@ -376,4 +420,6 @@ module.exports = {
   getCurrentUser,
   updateCurrentUser,
   changePassword,
+  listAffiliations,
+  selectBusiness,
 };

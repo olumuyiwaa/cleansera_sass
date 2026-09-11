@@ -37,4 +37,10 @@ router.put(
 router.post('/:id/clock-in', [body('assignmentId').notEmpty(), body('lat').isFloat(), body('lng').isFloat()], validate, controller.clockIn);
 router.post('/:id/clock-out', [body('assignmentId').notEmpty(), body('lat').isFloat(), body('lng').isFloat()], validate, controller.clockOut);
 
+// Per-cleaner quality/throughput snapshot — average rating, review count,
+// low-rating count, jobs, revenue. Staff-only; a cleaner's ratings aren't
+// exposed to the cleaner themselves through this endpoint.
+router.get('/:id/performance', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.performance);
+
 module.exports = router;
+

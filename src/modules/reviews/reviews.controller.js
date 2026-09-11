@@ -3,7 +3,7 @@ const { success } = require('../../utils/response');
 
 async function list(req, res, next) {
   try {
-    const reviews = await service.listReviews(req.businessId);
+    const reviews = await service.listReviews(req.businessId, { cleanerId: req.query.cleanerId });
     return success(res, 200, reviews);
   } catch (err) {
     next(err);

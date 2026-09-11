@@ -208,11 +208,21 @@ async function leaveReview(businessId, customerId, bookingId, { rating, comment 
     err.status = 422;
     throw err;
   }
+  // Attribute the review to whichever cleaner actually did the job. A
+  // booking can in principle carry more than one assignment (reassignment
+  // history) — the most recently assigned cleaner is the one who completed
+  // it, so that's who the rating reflects.
+  const primaryAssignment = await prisma.bookingAssignment.findFirst({
+    where: { bookingId },
+    orderBy: { assignedAt: 'desc' },
+  });
+
   return prisma.review.create({
     data: {
       businessId,
       bookingId,
       customerId,
+      cleanerId: primaryAssignment?.cleanerId || null,
       rating: r,
       comment: comment || null,
     },

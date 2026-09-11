@@ -242,7 +242,7 @@ async function seed() {
       },
     });
 
-    let profile = await prisma.cleanerProfile.findUnique({ where: { userId: user.id } });
+    let profile = await prisma.cleanerProfile.findUnique({ where: { businessId_userId: { businessId: business.id, userId: user.id } } });
     if (!profile) {
       profile = await prisma.cleanerProfile.create({
         data: {
