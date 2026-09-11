@@ -30,14 +30,32 @@ async function resolveSubjectLabel(subjectType, subjectId) {
   return null;
 }
 
-async function listConversations(businessId, { page = 1, limit = 20 } = {}) {
+/**
+ * `requester` (optional) is the authenticate() result: { businessRole, cleanerProfileId }.
+ * A CLEANER requester is restricted to their own CLEANER<->business thread —
+ * cleaners must never see other cleaners' or customers' conversations.
+ * Staff/owner/manager/SUPER_ADMIN are unaffected.
+ */
+function cleanerConversationFilter(requester) {
+  if (requester?.businessRole !== 'CLEANER') return {};
+  return { subjectType: 'CLEANER', subjectId: requester.cleanerProfileId };
+}
+
+/** True unless requester is a cleaner and this conversation isn't their own thread. */
+function conversationBelongsToRequester(conv, requester) {
+  if (requester?.businessRole !== 'CLEANER') return true;
+  return conv.subjectType === 'CLEANER' && conv.subjectId === requester.cleanerProfileId;
+}
+
+async function listConversations(businessId, { page = 1, limit = 20 } = {}, requester = null) {
   const take = Math.min(Number(limit) || 20, 100);
   const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
+  const scope = cleanerConversationFilter(requester);
 
   const [total, rows] = await Promise.all([
-    prisma.conversation.count({ where: { businessId } }),
+    prisma.conversation.count({ where: { businessId, ...scope } }),
     prisma.conversation.findMany({
-      where: { businessId },
+      where: { businessId, ...scope },
       include: {
         messages: {
           orderBy: { createdAt: 'desc' },
@@ -92,7 +110,15 @@ async function listConversations(businessId, { page = 1, limit = 20 } = {}) {
   };
 }
 
-async function getOrCreateConversation(businessId, { subjectType, subjectId }) {
+async function getOrCreateConversation(businessId, { subjectType, subjectId }, requester = null) {
+  // A cleaner can only ever open/fetch their own thread with the business —
+  // ignore whatever subjectType/subjectId they sent and force it to their
+  // own profile, rather than trusting client input for who they're messaging.
+  if (requester?.businessRole === 'CLEANER') {
+    subjectType = 'CLEANER';
+    subjectId = requester.cleanerProfileId;
+  }
+
   if (!['CLEANER', 'CUSTOMER'].includes(subjectType)) {
     const err = new Error('subjectType must be CLEANER or CUSTOMER');
     err.status = 422;
@@ -146,11 +172,13 @@ async function getOrCreateConversation(businessId, { subjectType, subjectId }) {
   };
 }
 
-async function listMessages(businessId, conversationId, { page = 1, limit = 50 } = {}) {
+async function listMessages(businessId, conversationId, { page = 1, limit = 50 } = {}, requester = null) {
   const conv = await prisma.conversation.findFirst({
     where: { id: conversationId, businessId },
   });
-  if (!conv) {
+  if (!conv || !conversationBelongsToRequester(conv, requester)) {
+    // 404, not 403 — don't confirm to a cleaner that a thread they're not
+    // party to even exists.
     const err = new Error('Conversation not found');
     err.status = 404;
     throw err;
@@ -210,7 +238,7 @@ async function listMessages(businessId, conversationId, { page = 1, limit = 50 }
   };
 }
 
-async function postMessage(businessId, conversationId, senderUserId, { body, content, attachmentKey }) {
+async function postMessage(businessId, conversationId, senderUserId, { body, content, attachmentKey }, requester = null) {
   const text = (body ?? content ?? '').trim();
   if (!text && !attachmentKey) {
     const err = new Error('Message body is required');
@@ -221,7 +249,7 @@ async function postMessage(businessId, conversationId, senderUserId, { body, con
   const conv = await prisma.conversation.findFirst({
     where: { id: conversationId, businessId },
   });
-  if (!conv) {
+  if (!conv || !conversationBelongsToRequester(conv, requester)) {
     const err = new Error('Conversation not found');
     err.status = 404;
     throw err;
@@ -255,12 +283,12 @@ async function postMessage(businessId, conversationId, senderUserId, { body, con
   };
 }
 
-async function markMessageRead(businessId, messageId, userId) {
+async function markMessageRead(businessId, messageId, userId, requester = null) {
   const msg = await prisma.message.findUnique({
     where: { id: messageId },
     include: { conversation: true },
   });
-  if (!msg || msg.conversation.businessId !== businessId) {
+  if (!msg || msg.conversation.businessId !== businessId || !conversationBelongsToRequester(msg.conversation, requester)) {
     const err = new Error('Message not found');
     err.status = 404;
     throw err;

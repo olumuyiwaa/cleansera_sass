@@ -3,7 +3,7 @@ const { success } = require('../../utils/response');
 
 async function list(req, res, next) {
   try {
-    const bookings = await service.listBookings(req.businessId, { status: req.query.status });
+    const bookings = await service.listBookings(req.businessId, { status: req.query.status }, req.user);
     return success(res, 200, bookings);
   } catch (err) {
     next(err);
@@ -21,7 +21,7 @@ async function create(req, res, next) {
 
 async function get(req, res, next) {
   try {
-    const booking = await service.getBookingById(req.businessId, req.params.id);
+    const booking = await service.getBookingById(req.businessId, req.params.id, req.user);
     return success(res, 200, booking);
   } catch (err) {
     next(err);

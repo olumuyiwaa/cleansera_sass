@@ -2,22 +2,46 @@ const prisma = require('../../config/database');
 const { audit } = require('../../utils/audit');
 const notifications = require('../notifications/notifications.service');
 
-async function listBookings(businessId, { status } = {}) {
+/**
+ * `requester` (optional) is the authenticate() result: { businessRole, cleanerProfileId }.
+ * A CLEANER requester is restricted to bookings they're actually assigned to —
+ * cleaners must never see the business's full booking book (other customers'
+ * names, addresses, pricing). Staff/owner/manager/SUPER_ADMIN see everything
+ * in-tenant as before.
+ */
+async function listBookings(businessId, { status } = {}, requester = null) {
+  const cleanerScope =
+    requester?.businessRole === 'CLEANER'
+      ? { assignments: { some: { cleanerId: requester.cleanerProfileId } } }
+      : {};
+
   return prisma.booking.findMany({
-    where: { businessId, ...(status ? { status } : {}) },
+    where: { businessId, ...(status ? { status } : {}), ...cleanerScope },
     include: { customer: true, service: true, assignments: { include: { cleaner: { include: { user: true } } } } },
     orderBy: { scheduledStart: 'desc' },
     take: 200,
   });
 }
 
-async function getBookingById(businessId, id) {
+async function getBookingById(businessId, id, requester = null) {
   const b = await prisma.booking.findFirst({ where: { id, businessId }, include: { customer: true, service: true, assignments: true } });
   if (!b) {
     const err = new Error('Booking not found');
     err.status = 404;
     throw err;
   }
+
+  if (requester?.businessRole === 'CLEANER') {
+    const assigned = b.assignments.some((a) => a.cleanerId === requester.cleanerProfileId);
+    if (!assigned) {
+      // 404, not 403 — don't confirm to a cleaner that a booking they're not
+      // on even exists.
+      const err = new Error('Booking not found');
+      err.status = 404;
+      throw err;
+    }
+  }
+
   return b;
 }
 

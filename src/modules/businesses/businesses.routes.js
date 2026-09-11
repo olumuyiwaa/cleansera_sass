@@ -9,28 +9,31 @@ const { requireRole } = require('../../middleware/authenticate');
 router.use(authenticate, scopeToBusiness);
 
 router.get('/', controller.list);
-router.put('/', controller.update);
+router.put('/', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.update);
 
 router.get('/branding', controller.getBranding);
-router.put('/branding', controller.updateBranding);
+router.put('/branding', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.updateBranding);
 
 // Stripe Connect — onboarding a business to receive job-level customer
 // payments directly. Distinct from the platform's own subscription billing.
-router.get('/stripe-connect/status', controller.getStripeConnectStatus);
-router.post('/stripe-connect/onboard', controller.startStripeConnectOnboarding);
-router.post('/stripe-connect/refresh', controller.refreshStripeConnectStatus);
+// Owner/manager only: this exposes connected-account status and can kick
+// off or refresh onboarding, which is a business-financial-settings action,
+// not something a cleaner account should be able to read or trigger.
+router.get('/stripe-connect/status', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.getStripeConnectStatus);
+router.post('/stripe-connect/onboard', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.startStripeConnectOnboarding);
+router.post('/stripe-connect/refresh', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.refreshStripeConnectStatus);
 
-router.post('/addresses', controller.addAddress);
-router.put('/addresses/:id', controller.updateAddress);
-router.delete('/addresses/:id', controller.removeAddress);
+router.post('/addresses', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.addAddress);
+router.put('/addresses/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.updateAddress);
+router.delete('/addresses/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.removeAddress);
 
 router.get('/service-areas', controller.listServiceAreas);
-router.post('/service-areas', controller.createServiceArea);
-router.put('/service-areas/:id', controller.updateServiceArea);
-router.delete('/service-areas/:id', controller.deleteServiceArea);
+router.post('/service-areas', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.createServiceArea);
+router.put('/service-areas/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.updateServiceArea);
+router.delete('/service-areas/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.deleteServiceArea);
 
 router.get('/hours', controller.listHours);
-router.put('/hours', controller.updateHours);
+router.put('/hours', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.updateHours);
 
 // Franchise / multi-location. requireRole allows SUPER_ADMIN through
 // automatically; any BUSINESS_MANAGER attempt is rejected since adding or

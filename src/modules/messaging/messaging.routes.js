@@ -1,7 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
 const controller = require('./messaging.controller');
-const { authenticate } = require('../../middleware/authenticate');
+const { authenticate, requireRole } = require('../../middleware/authenticate');
 const { scopeToBusiness } = require('../../middleware/scopeToBusiness');
 const validate = require('../../middleware/validate');
 
@@ -9,7 +9,10 @@ const router = express.Router();
 
 router.use(authenticate, scopeToBusiness);
 
-router.get('/recipients', controller.searchRecipients);
+// Staff-only: browses every cleaner and customer in the business to start a
+// new thread. Not something a cleaner account needs, and it would otherwise
+// hand a cleaner the full customer directory (names, phone, email).
+router.get('/recipients', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.searchRecipients);
 router.get('/', controller.list);
 router.post(
   '/',
