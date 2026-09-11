@@ -1,16 +1,9 @@
 const prisma = require('../../config/database');
-const { audit } = require('../../utils/audit');
 
 // ============================================================
 // FRANCHISE / MULTI-LOCATION
 // ============================================================
-//
-// A "location" is a full Business row like any other — its own cleaners,
-// customers, services, bookings, and widget subdomain — with
-// parentBusinessId pointing at the HQ/franchise account. Nothing about
-// tenant isolation changes for a location's day-to-day operation; the only
-// new capability is that the HQ owner (or an ORG_ADMIN) can list/create
-// locations and switch into one via scopeToBusiness's override path.
+const { audit } = require('../../utils/audit');
 
 async function listLocations(parentBusinessId) {
   return prisma.business.findMany({
@@ -27,9 +20,6 @@ async function createLocation(parentBusinessId, actorUserId, { name, subdomain, 
     err.status = 404;
     throw err;
   }
-  // A location can't itself be a franchise parent — keep the hierarchy one
-  // level deep, which covers the real-world "HQ + branches" shape without
-  // open-ended recursive rollups.
   if (parent.parentBusinessId) {
     const err = new Error('A location cannot itself have sub-locations');
     err.status = 422;
@@ -72,6 +62,8 @@ async function createLocation(parentBusinessId, actorUserId, { name, subdomain, 
 
   return location;
 }
+
+
 
 async function listBusinesses(businessId) {
   // For the businesses route (tenant-scoped), return the current business
@@ -225,8 +217,6 @@ async function updateHours(businessId, hours) {
 }
 
 module.exports = {
-  listLocations,
-  createLocation,
   listBusinesses,
   updateBusiness,
   getBranding,
@@ -240,4 +230,11 @@ module.exports = {
   deleteServiceArea,
   listHours,
   updateHours,
+  // Stripe Connect
+  getStripeConnectStatus,
+  startStripeConnectOnboarding,
+  refreshStripeConnectStatus,
+  // Franchise / multi-location
+  listLocations,
+  createLocation,
 };

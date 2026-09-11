@@ -420,7 +420,7 @@ async function createPaymentLink(businessId, bookingId, actorUserId, { successUr
     businessId,
     connectedAccountId: business.stripeConnectedAccountId,
     amountCents: booking.quotedPriceCents,
-    currency: currency || process.env.DEFAULT_CURRENCY || 'ngn',
+    currency: currency || process.env.DEFAULT_CURRENCY || 'usd',
     customerEmail: booking.customer?.email || undefined,
     successUrl,
     cancelUrl,

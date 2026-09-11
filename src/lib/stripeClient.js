@@ -113,7 +113,7 @@ async function createBookingCheckoutSession({
   businessId,
   connectedAccountId,
   amountCents,
-  currency = 'ngn',
+  currency = 'usd',
   customerEmail,
   successUrl,
   cancelUrl,
@@ -143,7 +143,7 @@ async function createBookingCheckoutSession({
     line_items: [
       {
         price_data: {
-          currency: (currency || 'ngn').toLowerCase(),
+          currency: (currency || 'usd').toLowerCase(),
           product_data: {
             name: description || `Cleaning booking ${bookingId}`,
           },

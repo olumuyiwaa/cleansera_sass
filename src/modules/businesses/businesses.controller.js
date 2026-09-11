@@ -147,9 +147,6 @@ async function updateHours(req, res, next) {
 
 async function listLocations(req, res, next) {
   try {
-    // req.businessId here is the caller's own business — for a franchise
-    // HQ that's the parent, so this lists its locations directly (not an
-    // override, since listing your own locations needs no special grant).
     const locations = await service.listLocations(req.businessId);
     return success(res, 200, locations);
   } catch (err) {
@@ -166,6 +163,4 @@ async function createLocation(req, res, next) {
   }
 }
 
-module.exports = {
-  listLocations,
-  createLocation, list, update, getBranding, updateBranding, addAddress, updateAddress, removeAddress, listServiceAreas, createServiceArea, updateServiceArea, deleteServiceArea, listHours, updateHours, getStripeConnectStatus, startStripeConnectOnboarding, refreshStripeConnectStatus };
+module.exports = { list, update, getBranding, updateBranding, addAddress, updateAddress, removeAddress, listServiceAreas, createServiceArea, updateServiceArea, deleteServiceArea, listHours, updateHours, getStripeConnectStatus, startStripeConnectOnboarding, refreshStripeConnectStatus, listLocations, createLocation };
