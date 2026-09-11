@@ -1,6 +1,6 @@
 /**
- * Business timezones matter here: a business in Africa/Lagos setting "9:00
- * AM every Monday" means 9am Lagos time, not 9am on whatever server the API
+ * Business timezones matter here: a business in Europe/Netherlands setting "9:00
+ * AM every Monday" means 9am Netherlands time, not 9am on whatever server the API
  * happens to run on. These helpers use Intl.DateTimeFormat (built into
  * Node's ICU, no extra dependency) to convert between a timezone's wall
  * clock and the UTC instant Prisma actually stores.

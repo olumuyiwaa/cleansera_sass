@@ -92,7 +92,7 @@ model Business {
   name         String
   subdomain    String   @unique
   customDomain String?  @unique
-  timezone     String   @default("Africa/Lagos")
+  timezone     String   @default("Europe/Natherlands")
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -102,10 +102,10 @@ model Business {
   // transferred to this connected account (minus the platform fee), never
   // held in CleanSera's own Stripe balance. Subscription billing
   // (BusinessSubscription below) is unrelated and unaffected by this.
-  stripeConnectedAccountId String?  @unique
-  stripeConnectOnboarded   Boolean  @default(false)
-  stripeChargesEnabled     Boolean  @default(false)
-  stripePayoutsEnabled     Boolean  @default(false)
+  stripeConnectedAccountId String? @unique
+  stripeConnectOnboarded   Boolean @default(false)
+  stripeChargesEnabled     Boolean @default(false)
+  stripePayoutsEnabled     Boolean @default(false)
 
   branding           BusinessBranding?
   addresses          BusinessAddress[]

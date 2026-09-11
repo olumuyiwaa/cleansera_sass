@@ -335,15 +335,43 @@ async function updatePaymentStatus(businessId, bookingId, actorUserId, { payment
 
 // Override completeBooking to request review after completion
 async function completeBookingWithReview(businessId, bookingId, actorUserId) {
-  await getBookingById(businessId, bookingId);
-  const updated = await prisma.booking.update({ where: { id: bookingId }, data: { status: 'COMPLETED' } });
+  const booking = await getBookingById(businessId, bookingId);
+  const updated = await prisma.booking.update({
+    where: { id: bookingId },
+    data: { status: 'COMPLETED' },
+  });
   await audit({ businessId, actorUserId, action: 'BOOKING_COMPLETED', entityType: 'Booking', entityId: bookingId });
+
+  // Review request (existing)
   try {
-    const full = await prisma.booking.findUnique({ where: { id: bookingId }, include: { customer: true } });
-    if (full && full.customer) {
+    const full = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { customer: true },
+    });
+    if (full?.customer) {
       await notifications.requestReview(businessId, full, full.customer);
     }
   } catch (e) { /* non-fatal */ }
+
+  // Auto payment request if unpaid
+  try {
+    if (booking.paymentStatus !== 'PAID' && booking.quotedPriceCents > 0) {
+      const business = await prisma.business.findUnique({
+        where: { id: businessId },
+        select: { stripeChargesEnabled: true, stripeConnectedAccountId: true },
+      });
+      if (business?.stripeChargesEnabled && business.stripeConnectedAccountId) {
+        const { url } = await createPaymentLink(businessId, bookingId, actorUserId, {
+          // optional custom success/cancel
+        });
+        // notify customer with payment URL
+        await notifications.notifyPaymentRequest(businessId, booking, url);
+      }
+    }
+  } catch (e) {
+    // log only — never fail complete because payment failed
+  }
+
   return updated;
 }
 
