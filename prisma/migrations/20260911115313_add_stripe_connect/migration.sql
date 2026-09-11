@@ -92,7 +92,7 @@ CREATE TABLE "Business" (
     "name" TEXT NOT NULL,
     "subdomain" TEXT NOT NULL,
     "customDomain" TEXT,
-    "timezone" TEXT NOT NULL DEFAULT 'Europe/Natherlands',
+    "timezone" TEXT NOT NULL DEFAULT 'Europe/Amsterdam',
     "isActive" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,

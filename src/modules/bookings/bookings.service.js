@@ -154,11 +154,167 @@ async function confirmBooking(businessId, bookingId, actorUserId) {
   return updated;
 }
 
-async function completeBooking(businessId, bookingId, actorUserId) {
-  await getBookingById(businessId, bookingId);
-  const updated = await prisma.booking.update({ where: { id: bookingId }, data: { status: 'COMPLETED' } });
-  await audit({ businessId, actorUserId, action: 'BOOKING_COMPLETED', entityType: 'Booking', entityId: bookingId });
+async function completeBooking(businessId, bookingId, actorUserId, options = {}) {
+  const { requestReview = true, force = false } = options;
+
+  const booking = await prisma.booking.findFirst({
+    where: { id: bookingId, businessId },
+    include: {
+      customer: true,
+      service: true,
+      business: true,
+      checklist: true,
+      assignments: true,
+    },
+  });
+
+  if (!booking) {
+    const err = new Error('Booking not found');
+    err.status = 404;
+    throw err;
+  }
+
+  if (booking.status === 'CANCELLED') {
+    const err = new Error('Cannot complete a cancelled booking');
+    err.status = 422;
+    throw err;
+  }
+
+  if (booking.status === 'COMPLETED' && !force) {
+    // Idempotent — already done
+    return booking;
+  }
+
+  // Mark checklist completed if present and not already
+  if (booking.checklist && !booking.checklist.completedAt) {
+    await prisma.jobChecklist.update({
+      where: { id: booking.checklist.id },
+      data: { completedAt: new Date() },
+    });
+  }
+
+  const updated = await prisma.booking.update({
+    where: { id: bookingId },
+    data: { status: 'COMPLETED' },
+  });
+
+  await audit({
+    businessId,
+    actorUserId,
+    action: 'BOOKING_COMPLETED',
+    entityType: 'Booking',
+    entityId: bookingId,
+  });
+
+  // Optional auto-charge path (creates a Checkout Session for the customer to pay)
+  // Full off-session capture requires saving a payment method — that is Phase 2.
+  // For Phase 1 we generate a payment link / session and notify the customer.
+  if (
+      booking.autoChargeOnComplete &&
+      booking.paymentStatus !== 'PAID' &&
+      booking.business?.stripeChargesEnabled &&
+      booking.business?.stripeConnectedAccountId &&
+      booking.quotedPriceCents > 0
+  ) {
+    try {
+      const session = await stripeClient.createBookingCheckoutSession({
+        bookingId: booking.id,
+        businessId,
+        connectedAccountId: booking.business.stripeConnectedAccountId,
+        amountCents: booking.quotedPriceCents,
+        customerEmail: booking.customer?.email,
+        description: `${booking.service?.name || 'Cleaning'} — ${booking.id}`,
+      });
+
+      await prisma.booking.update({
+        where: { id: bookingId },
+        data: {
+          stripeCheckoutSessionId: session.id,
+          paymentNote: `auto_charge_session:${session.id};created_at:${new Date().toISOString()}`,
+        },
+      });
+
+      // Notify customer with payment link
+      try {
+        await notifications.sendCustomerPaymentLink?.(
+            businessId,
+            booking,
+            booking.customer,
+            session.url
+        );
+      } catch (e) {
+        logger.warn('Failed to send payment link notification', { bookingId, error: e.message });
+      }
+    } catch (chargeErr) {
+      logger.error('Auto-charge session creation failed', {
+        bookingId,
+        error: chargeErr.message,
+      });
+      // Non-fatal — job is still completed
+    }
+  }
+
+  // Ask for review
+  if (requestReview && booking.customer) {
+    try {
+      await notifications.requestCustomerReview?.(businessId, booking, booking.customer);
+    } catch (e) {
+      // non-fatal
+    }
+  }
+
   return updated;
+}
+
+/**
+ * Cleaner-facing complete path (used by the Flutter app).
+ * Also records check-out location when provided.
+ */
+async function completeBookingByCleaner(bookingId, cleanerUserId, { lat, lng, notes } = {}) {
+  const cleaner = await prisma.cleanerProfile.findFirst({
+    where: { userId: cleanerUserId, status: 'ACTIVE' },
+    include: { business: true },
+  });
+  if (!cleaner) {
+    const err = new Error('Active cleaner profile not found');
+    err.status = 403;
+    throw err;
+  }
+
+  const assignment = await prisma.bookingAssignment.findFirst({
+    where: { bookingId, cleanerId: cleaner.id },
+    include: { booking: true },
+  });
+  if (!assignment) {
+    const err = new Error('You are not assigned to this booking');
+    err.status = 403;
+    throw err;
+  }
+
+  // Record check-out
+  await prisma.bookingAssignment.update({
+    where: { id: assignment.id },
+    data: {
+      checkedOutAt: new Date(),
+      // reuse checkIn fields if you prefer separate checkOutLat/Lng later
+    },
+  });
+
+  // Update cleaner's last known location for better dispatch ranking
+  if (lat != null && lng != null) {
+    await prisma.cleanerProfile.update({
+      where: { id: cleaner.id },
+      data: {
+        lastKnownLat: lat,
+        lastKnownLng: lng,
+        lastKnownAt: new Date(),
+      },
+    });
+  }
+
+  return completeBooking(cleaner.businessId, bookingId, cleanerUserId, {
+    requestReview: true,
+  });
 }
 
 module.exports = { listBookings, getBookingById, createBooking, updateBooking, assignBooking, confirmBooking, completeBooking };
@@ -379,6 +535,7 @@ module.exports.cancelBooking = cancelBooking;
 module.exports.rescheduleBooking = rescheduleBooking;
 module.exports.updatePaymentStatus = updatePaymentStatus;
 module.exports.completeBooking = completeBookingWithReview;
+module.exports.completeBookingByCleaner = completeBookingByCleaner;
 
 const { createBookingCheckoutSession } = require('../../lib/stripeClient');
 

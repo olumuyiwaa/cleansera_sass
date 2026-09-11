@@ -59,7 +59,7 @@ async function seed() {
       data: {
         name: 'Lady Greener Netherlands',
         subdomain: 'ladygreener',
-        timezone: 'Europe/Netherlands',
+        timezone: 'Europe/Amsterdam',
         branding: {
           create: {
             primaryColor: '#0EA5E9',

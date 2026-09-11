@@ -7,62 +7,165 @@ async function processOnce() {
   const now = new Date();
   const schedules = await prisma.recurringSchedule.findMany({
     where: { isActive: true, nextRunDate: { lte: now } },
-    include: { customer: { include: { addresses: true } }, service: true, customerAddress: true, business: true },
+    include: {
+      customer: { include: { addresses: true } },
+      service: true,
+      customerAddress: true,
+      business: true,
+    },
+    // Limit per tick so a large backlog doesn't starve the process
+    take: 100,
+    orderBy: { nextRunDate: 'asc' },
   });
+
+  let createdCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
 
   for (const s of schedules) {
     try {
-      if (!s.customer || !s.service) {
-        logger.error('Recurring schedule missing customer or service, skipping', { scheduleId: s.id });
+      if (!s.customer || !s.service || !s.business) {
+        logger.error('Recurring schedule missing required relations, deactivating', {
+          scheduleId: s.id,
+        });
+        await prisma.recurringSchedule.update({
+          where: { id: s.id },
+          data: { isActive: false },
+        });
+        errorCount += 1;
         continue;
       }
 
+      const timezone = s.business.timezone || 'UTC';
       const start = new Date(s.nextRunDate);
-      const end = new Date(start.getTime() + s.service.estimatedMinutes * 60 * 1000);
-      const address = s.customerAddress || s.customer.addresses.find((a) => a.isPrimary) || s.customer.addresses[0];
+      const end = new Date(start.getTime() + (s.service.estimatedMinutes || 60) * 60 * 1000);
 
-      let booking;
-      try {
-        booking = await prisma.booking.create({
-          data: {
-            businessId: s.businessId,
-            customerId: s.customerId,
-            serviceId: s.serviceId,
-            recurringScheduleId: s.id,
-            addressLine1: address?.line1 || '',
-            addressLine2: address?.line2,
-            city: address?.city || '',
-            state: address?.state || '',
-            latitude: address?.latitude,
-            longitude: address?.longitude,
-            scheduledStart: start,
-            scheduledEnd: end,
-            quotedPriceCents: s.service.basePriceCents,
-            status: 'REQUESTED',
-          },
+      const address =
+          s.customerAddress ||
+          s.customer.addresses.find((a) => a.isPrimary) ||
+          s.customer.addresses[0];
+
+      if (!address || !address.line1) {
+        logger.warn('Recurring schedule has no usable address, skipping this tick', {
+          scheduleId: s.id,
         });
+        // Still advance so we don't get stuck on a broken schedule forever
+        const next = advanceRunDate(s.nextRunDate, s.frequency, s.startTime, timezone);
+        await prisma.recurringSchedule.update({
+          where: { id: s.id },
+          data: { nextRunDate: next },
+        });
+        skippedCount += 1;
+        continue;
+      }
+
+      // Compute next run date first so we can update it even on P2002
+      const nextRunDate = advanceRunDate(s.nextRunDate, s.frequency, s.startTime, timezone);
+
+      let booking = null;
+      let wasDuplicate = false;
+
+      try {
+        // Use a transaction: create booking + advance nextRunDate together.
+        // The unique constraint on (recurringScheduleId, scheduledStart) is the
+        // safety net against concurrent daemon instances.
+        const result = await prisma.$transaction(async (tx) => {
+          const b = await tx.booking.create({
+            data: {
+              businessId: s.businessId,
+              customerId: s.customerId,
+              serviceId: s.serviceId,
+              recurringScheduleId: s.id,
+              addressLine1: address.line1,
+              addressLine2: address.line2,
+              city: address.city || '',
+              state: address.state || '',
+              latitude: address.latitude,
+              longitude: address.longitude,
+              scheduledStart: start,
+              scheduledEnd: end,
+              quotedPriceCents: s.service.basePriceCents,
+              status: 'REQUESTED',
+              paymentStatus: 'UNPAID',
+            },
+          });
+
+          await tx.recurringSchedule.update({
+            where: { id: s.id },
+            data: { nextRunDate },
+          });
+
+          return b;
+        });
+        booking = result;
       } catch (e) {
         if (e.code === 'P2002') {
-          // A booking for this schedule + start already exists — another
-          // daemon tick/replica beat us to it. Not an error, just skip.
-          logger.info('Recurring booking already exists for this slot, skipping', { scheduleId: s.id, start });
+          // Another replica / previous tick already created this slot.
+          // Still advance nextRunDate so we don't re-process the same slot.
+          wasDuplicate = true;
+          await prisma.recurringSchedule.update({
+            where: { id: s.id },
+            data: { nextRunDate },
+          });
+          logger.info('Recurring booking already exists for this slot, advanced schedule', {
+            scheduleId: s.id,
+            start: start.toISOString(),
+          });
         } else {
           throw e;
         }
       }
 
       if (booking) {
-        await notifications.notifyBookingCreated(s.businessId, booking);
-        logger.info('Created recurring booking', { scheduleId: s.id, bookingId: booking.id });
+        try {
+          await notifications.notifyBookingCreated(s.businessId, booking);
+        } catch (notifyErr) {
+          logger.warn('Failed to notify for recurring booking', {
+            bookingId: booking.id,
+            error: notifyErr.message,
+          });
+        }
+        logger.info('Created recurring booking', {
+          scheduleId: s.id,
+          bookingId: booking.id,
+          nextRunDate: nextRunDate.toISOString(),
+        });
+        createdCount += 1;
+      } else if (wasDuplicate) {
+        skippedCount += 1;
       }
-
-      const timezone = s.business?.timezone || 'UTC';
-      const next = advanceRunDate(s.nextRunDate, s.frequency, s.startTime, timezone);
-      await prisma.recurringSchedule.update({ where: { id: s.id }, data: { nextRunDate: next } });
     } catch (e) {
-      logger.error('Failed to process recurring schedule', e);
+      errorCount += 1;
+      logger.error('Failed to process recurring schedule', {
+        scheduleId: s.id,
+        error: e.message,
+        stack: e.stack,
+      });
+      // Do NOT advance nextRunDate on unexpected errors — allow retry next tick
     }
   }
+
+  logger.info('recurring processOnce finished', {
+    scanned: schedules.length,
+    created: createdCount,
+    skipped: skippedCount,
+    errors: errorCount,
+  });
+
+  return { scanned: schedules.length, created: createdCount, skipped: skippedCount, errors: errorCount };
+}
+
+// Keep the same export / CLI entrypoint contract
+if (require.main === module) {
+  processOnce()
+      .then((stats) => {
+        logger.info('recurring worker (single pass) done', stats);
+        process.exit(stats.errors > 0 ? 1 : 0);
+      })
+      .catch((e) => {
+        logger.error('recurring worker (single pass) failed', e);
+        process.exit(1);
+      });
 }
 
 // NOTE: this module intentionally does not schedule its own cron. Scheduling
