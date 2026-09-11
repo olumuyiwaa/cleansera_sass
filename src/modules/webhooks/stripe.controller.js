@@ -17,7 +17,9 @@ async function handle(req, res) {
   try {
     if (type === 'invoice.payment_succeeded') {
       const stripeSubId = obj.subscription;
-      const subscription = await prisma.businessSubscription.findFirst({ where: { stripeSubscriptionId: stripeSubId } });
+      const subscription = await prisma.businessSubscription.findFirst({
+        where: { stripeSubscriptionId: stripeSubId },
+      });
       if (subscription) {
         await prisma.businessSubscription.update({
           where: { id: subscription.id },
@@ -44,9 +46,14 @@ async function handle(req, res) {
       }
     } else if (type === 'invoice.payment_failed') {
       const stripeSubId = obj.subscription;
-      const subscription = await prisma.businessSubscription.findFirst({ where: { stripeSubscriptionId: stripeSubId } });
+      const subscription = await prisma.businessSubscription.findFirst({
+        where: { stripeSubscriptionId: stripeSubId },
+      });
       if (subscription) {
-        await prisma.businessSubscription.update({ where: { id: subscription.id }, data: { status: 'PAST_DUE' } });
+        await prisma.businessSubscription.update({
+          where: { id: subscription.id },
+          data: { status: 'PAST_DUE' },
+        });
         await prisma.platformInvoice.upsert({
           where: { stripeInvoiceId: obj.id },
           create: {
@@ -70,30 +77,50 @@ async function handle(req, res) {
       const status = obj.status === 'active' ? 'ACTIVE' : String(obj.status || '').toUpperCase();
       await prisma.businessSubscription.updateMany({
         where: { stripeSubscriptionId: stripeSubId },
-        data: { status, currentPeriodEnd: new Date(obj.current_period_end * 1000) },
+        data: {
+          status,
+          currentPeriodEnd: new Date(obj.current_period_end * 1000),
+        },
       });
     } else if (type === 'checkout.session.completed') {
-      // Job-level payment
+      // Job-level payment via Stripe Connect destination charge
       const meta = obj.metadata || {};
       if (meta.purpose === 'job_payment' && meta.bookingId) {
         const booking = await prisma.booking.findUnique({ where: { id: meta.bookingId } });
         if (booking && booking.paymentStatus !== 'PAID') {
+          const paymentIntentId =
+              typeof obj.payment_intent === 'string'
+                  ? obj.payment_intent
+                  : obj.payment_intent?.id || null;
+
           await prisma.booking.update({
             where: { id: meta.bookingId },
             data: {
               paymentStatus: 'PAID',
+              stripeCheckoutSessionId: obj.id,
+              stripePaymentIntentId: paymentIntentId,
+              amountPaidCents: obj.amount_total ?? booking.quotedPriceCents,
               paymentNote: `stripe_session:${obj.id};paid_at:${new Date().toISOString()}`,
             },
           });
+
           await audit({
             businessId: meta.businessId || booking.businessId,
             actorUserId: null,
             action: 'BOOKING_PAYMENT_RECEIVED',
             entityType: 'Booking',
             entityId: meta.bookingId,
-            metadata: { sessionId: obj.id, amountTotal: obj.amount_total },
+            metadata: {
+              sessionId: obj.id,
+              paymentIntentId,
+              amountTotal: obj.amount_total,
+              currency: obj.currency,
+            },
           });
-          logger.info(`Booking ${meta.bookingId} marked PAID via Checkout Session ${obj.id}`);
+
+          logger.info(
+              `Booking ${meta.bookingId} marked PAID via Checkout Session ${obj.id} (amount=${obj.amount_total})`
+          );
         }
       }
     } else if (type === 'account.updated') {
@@ -101,7 +128,9 @@ async function handle(req, res) {
       // onboarding (KYC, bank details, etc). This is the authoritative way
       // to learn charges_enabled flipped true — don't rely on the frontend
       // redirect alone, since the user can close the tab mid-flow.
-      const business = await prisma.business.findFirst({ where: { stripeConnectedAccountId: obj.id } });
+      const business = await prisma.business.findFirst({
+        where: { stripeConnectedAccountId: obj.id },
+      });
       if (business) {
         await prisma.business.update({
           where: { id: business.id },

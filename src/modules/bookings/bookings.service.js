@@ -1,19 +1,15 @@
 const prisma = require('../../config/database');
 const { audit } = require('../../utils/audit');
 const notifications = require('../notifications/notifications.service');
+const logger = require('../../config/logger');
+const { createBookingCheckoutSession } = require('../../lib/stripeClient');
+const { computeInitialRunDate } = require('../../utils/timezone');
 
-/**
- * `requester` (optional) is the authenticate() result: { businessRole, cleanerProfileId }.
- * A CLEANER requester is restricted to bookings they're actually assigned to —
- * cleaners must never see the business's full booking book (other customers'
- * names, addresses, pricing). Staff/owner/manager/SUPER_ADMIN see everything
- * in-tenant as before.
- */
 async function listBookings(businessId, { status } = {}, requester = null) {
   const cleanerScope =
-    requester?.businessRole === 'CLEANER'
-      ? { assignments: { some: { cleanerId: requester.cleanerProfileId } } }
-      : {};
+      requester?.businessRole === 'CLEANER'
+          ? { assignments: { some: { cleanerId: requester.cleanerProfileId } } }
+          : {};
 
   return prisma.booking.findMany({
     where: { businessId, ...(status ? { status } : {}), ...cleanerScope },
@@ -241,7 +237,7 @@ async function completeBooking(businessId, bookingId, actorUserId, options = {})
       booking.quotedPriceCents > 0
   ) {
     try {
-      const session = await stripeClient.createBookingCheckoutSession({
+      const session = await createBookingCheckoutSession({
         bookingId: booking.id,
         businessId,
         connectedAccountId: booking.business.stripeConnectedAccountId,
@@ -341,10 +337,6 @@ async function completeBookingByCleaner(bookingId, cleanerUserId, { lat, lng, no
   });
 }
 
-module.exports = { listBookings, getBookingById, createBooking, updateBooking, assignBooking, confirmBooking, completeBooking };
-
-const { computeInitialRunDate } = require('../../utils/timezone');
-
 async function createRecurringSchedule(businessId, actorUserId, payload) {
   const { customerId, serviceId, customerAddressId, frequency, dayOfWeek, startTime } = payload;
 
@@ -398,10 +390,6 @@ async function cancelRecurringSchedule(businessId, id, actorUserId) {
   await audit({ businessId, actorUserId, action: 'RECURRING_CANCELLED', entityType: 'RecurringSchedule', entityId: id });
 }
 
-module.exports.createRecurringSchedule = createRecurringSchedule;
-module.exports.listRecurringSchedules = listRecurringSchedules;
-module.exports.cancelRecurringSchedule = cancelRecurringSchedule;
-
 async function pauseRecurringSchedule(businessId, id, actorUserId) {
   const rs = await prisma.recurringSchedule.findFirst({ where: { id, businessId } });
   if (!rs) {
@@ -425,10 +413,6 @@ async function resumeRecurringSchedule(businessId, id, actorUserId) {
   await audit({ businessId, actorUserId, action: 'RECURRING_RESUMED', entityType: 'RecurringSchedule', entityId: id });
   return { id, isActive: true };
 }
-
-module.exports.pauseRecurringSchedule = pauseRecurringSchedule;
-module.exports.resumeRecurringSchedule = resumeRecurringSchedule;
-
 
 async function cancelBooking(businessId, bookingId, actorUserId, reason) {
   const booking = await getBookingById(businessId, bookingId);
@@ -555,14 +539,6 @@ async function completeBookingWithReview(businessId, bookingId, actorUserId) {
   return updated;
 }
 
-module.exports.cancelBooking = cancelBooking;
-module.exports.rescheduleBooking = rescheduleBooking;
-module.exports.updatePaymentStatus = updatePaymentStatus;
-module.exports.completeBooking = completeBookingWithReview;
-module.exports.completeBookingByCleaner = completeBookingByCleaner;
-
-const { createBookingCheckoutSession } = require('../../lib/stripeClient');
-
 async function createPaymentLink(businessId, bookingId, actorUserId, { successUrl, cancelUrl, currency } = {}) {
   const booking = await prisma.booking.findFirst({
     where: { id: bookingId, businessId },
@@ -590,7 +566,7 @@ async function createPaymentLink(businessId, bookingId, actorUserId, { successUr
   });
   if (!business?.stripeChargesEnabled || !business?.stripeConnectedAccountId) {
     const err = new Error(
-      'This business has not finished setting up Stripe Connect, so it cannot accept card payments for bookings yet. Complete Stripe onboarding in Business Settings.'
+        'This business has not finished setting up Stripe Connect, so it cannot accept card payments for bookings yet. Complete Stripe onboarding in Business Settings.'
     );
     err.status = 402;
     throw err;
@@ -611,7 +587,8 @@ async function createPaymentLink(businessId, bookingId, actorUserId, { successUr
   await prisma.booking.update({
     where: { id: bookingId },
     data: {
-      paymentNote: `stripe_session:${session.id}`,
+      stripeCheckoutSessionId: session.id,
+      paymentNote: `stripe_session:${session.id};created_at:${new Date().toISOString()}`,
     },
   });
 
@@ -627,4 +604,23 @@ async function createPaymentLink(businessId, bookingId, actorUserId, { successUr
   return { url: session.url, sessionId: session.id };
 }
 
-module.exports.createPaymentLink = createPaymentLink;
+module.exports = {
+  listBookings,
+  getBookingById,
+  createBooking,
+  updateBooking,
+  assignBooking,
+  confirmBooking,
+  // Admin complete goes through review + optional payment path
+  completeBooking: completeBookingWithReview,
+  completeBookingByCleaner,
+  createRecurringSchedule,
+  listRecurringSchedules,
+  cancelRecurringSchedule,
+  pauseRecurringSchedule,
+  resumeRecurringSchedule,
+  cancelBooking,
+  rescheduleBooking,
+  updatePaymentStatus,
+  createPaymentLink,
+};

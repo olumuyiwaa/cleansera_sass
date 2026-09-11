@@ -52,7 +52,7 @@ async function onboardCleaner(businessId, actorUserId, { firstName, lastName, em
   }
 
   const profile = existingProfile
-    ? await prisma.cleanerProfile.update({
+      ? await prisma.cleanerProfile.update({
         where: { id: existingProfile.id },
         data: {
           status: 'ACTIVE',
@@ -61,7 +61,7 @@ async function onboardCleaner(businessId, actorUserId, { firstName, lastName, em
           offboardedReason: null,
         },
       })
-    : await prisma.cleanerProfile.create({
+      : await prisma.cleanerProfile.create({
         data: {
           businessId,
           userId: user.id,
@@ -155,10 +155,11 @@ async function getCleanerPerformance(businessId, cleanerId, { from, to } = {}) {
   return all.find((r) => r.cleanerId === cleanerId) || null;
 }
 
-module.exports = { onboardCleaner, offboardCleaner, listCleaners, setAvailability, getCleanerPerformance };
-
 async function clockIn(businessId, cleanerId, assignmentId, actorUserId, { lat, lng }) {
-  const assignment = await prisma.bookingAssignment.findFirst({ where: { id: assignmentId }, include: { booking: true, cleaner: true } });
+  const assignment = await prisma.bookingAssignment.findFirst({
+    where: { id: assignmentId },
+    include: { booking: true, cleaner: true },
+  });
   if (!assignment || assignment.cleanerId !== cleanerId || assignment.booking.businessId !== businessId) {
     const err = new Error('Assignment not found or mismatch');
     err.status = 404;
@@ -166,7 +167,10 @@ async function clockIn(businessId, cleanerId, assignmentId, actorUserId, { lat, 
   }
 
   // ensure actor is either the cleaner user or a business member
-  const cleaner = await prisma.cleanerProfile.findUnique({ where: { id: cleanerId }, include: { user: true } });
+  const cleaner = await prisma.cleanerProfile.findUnique({
+    where: { id: cleanerId },
+    include: { user: true },
+  });
   if (!cleaner) {
     const err = new Error('Cleaner profile not found');
     err.status = 404;
@@ -175,7 +179,9 @@ async function clockIn(businessId, cleanerId, assignmentId, actorUserId, { lat, 
 
   if (actorUserId !== cleaner.userId) {
     // allow business members with role to clock in on behalf
-    const bm = await prisma.businessMember.findFirst({ where: { businessId, userId: actorUserId, isActive: true } });
+    const bm = await prisma.businessMember.findFirst({
+      where: { businessId, userId: actorUserId, isActive: true },
+    });
     if (!bm) {
       const err = new Error('Not authorized to clock in for this cleaner');
       err.status = 403;
@@ -183,8 +189,18 @@ async function clockIn(businessId, cleanerId, assignmentId, actorUserId, { lat, 
     }
   }
 
+  // Idempotent: already checked in
+  if (assignment.checkedInAt) {
+    return assignment;
+  }
+
   // strict geo check: if booking has lat/lng, ensure within 500m
-  if (assignment.booking.latitude != null && assignment.booking.longitude != null && lat != null && lng != null) {
+  if (
+      assignment.booking.latitude != null &&
+      assignment.booking.longitude != null &&
+      lat != null &&
+      lng != null
+  ) {
     const { distanceMeters } = require('../../utils/geo');
     const d = distanceMeters(lat, lng, assignment.booking.latitude, assignment.booking.longitude);
     if (d > 500) {
@@ -194,35 +210,75 @@ async function clockIn(businessId, cleanerId, assignmentId, actorUserId, { lat, 
     }
   }
 
-  const updated = await prisma.bookingAssignment.update({ where: { id: assignmentId }, data: { checkedInAt: new Date(), checkInLat: lat || null, checkInLng: lng || null } });
+  const now = new Date();
 
-  
-  // Record this as the cleaner's best-known live position for dispatch
-  // ranking, so the next suggestion isn't guessing from stale job history.
-  if (lat != null && lng != null) {
-    await prisma.cleanerProfile.update({
-      where: { id: cleanerId },
-      data: { lastKnownLat: lat, lastKnownLng: lng, lastKnownAt: new Date() },
+  const updated = await prisma.$transaction(async (tx) => {
+    const a = await tx.bookingAssignment.update({
+      where: { id: assignmentId },
+      data: {
+        checkedInAt: now,
+        checkInLat: lat ?? null,
+        checkInLng: lng ?? null,
+      },
     });
+
+    // Move booking into IN_PROGRESS when cleaner clocks in
+    if (['REQUESTED', 'CONFIRMED', 'ASSIGNED'].includes(assignment.booking.status)) {
+      await tx.booking.update({
+        where: { id: assignment.bookingId },
+        data: { status: 'IN_PROGRESS' },
+      });
+    }
+
+    // Best-known live position for dispatch ranking
+    if (lat != null && lng != null) {
+      await tx.cleanerProfile.update({
+        where: { id: cleanerId },
+        data: {
+          lastKnownLat: lat,
+          lastKnownLng: lng,
+          lastKnownAt: now,
+        },
+      });
+    }
+
+    return a;
+  });
+
+  await audit({
+    businessId,
+    actorUserId,
+    action: 'CLEANER_CHECKED_IN',
+    entityType: 'BookingAssignment',
+    entityId: assignmentId,
+    metadata: { lat, lng, bookingId: assignment.bookingId },
+  });
+
+  try {
+    const notifications = require('../notifications/notifications.service');
+    await notifications.notifyCleanerAssigned?.(businessId, assignment.booking, cleaner.userId);
+  } catch (e) {
+    /* non-fatal */
   }
-
-  await audit({ businessId, actorUserId, action: 'CLEANER_CHECKED_IN', entityType: 'BookingAssignment', entityId: assignmentId, metadata: { lat, lng } });
-
-  // notify booking owner/business
-  try { const notifications = require('../notifications/notifications.service'); await notifications.notifyCleanerAssigned(businessId, assignment.booking, cleaner.userId); } catch (e) { }
 
   return updated;
 }
 
 async function clockOut(businessId, cleanerId, assignmentId, actorUserId, { lat, lng }) {
-  const assignment = await prisma.bookingAssignment.findFirst({ where: { id: assignmentId }, include: { booking: true, cleaner: true } });
+  const assignment = await prisma.bookingAssignment.findFirst({
+    where: { id: assignmentId },
+    include: { booking: true, cleaner: true },
+  });
   if (!assignment || assignment.cleanerId !== cleanerId || assignment.booking.businessId !== businessId) {
     const err = new Error('Assignment not found or mismatch');
     err.status = 404;
     throw err;
   }
 
-  const cleaner = await prisma.cleanerProfile.findUnique({ where: { id: cleanerId }, include: { user: true } });
+  const cleaner = await prisma.cleanerProfile.findUnique({
+    where: { id: cleanerId },
+    include: { user: true },
+  });
   if (!cleaner) {
     const err = new Error('Cleaner profile not found');
     err.status = 404;
@@ -230,7 +286,9 @@ async function clockOut(businessId, cleanerId, assignmentId, actorUserId, { lat,
   }
 
   if (actorUserId !== cleaner.userId) {
-    const bm = await prisma.businessMember.findFirst({ where: { businessId, userId: actorUserId, isActive: true } });
+    const bm = await prisma.businessMember.findFirst({
+      where: { businessId, userId: actorUserId, isActive: true },
+    });
     if (!bm) {
       const err = new Error('Not authorized to clock out for this cleaner');
       err.status = 403;
@@ -238,20 +296,46 @@ async function clockOut(businessId, cleanerId, assignmentId, actorUserId, { lat,
     }
   }
 
-  const updated = await prisma.bookingAssignment.update({ where: { id: assignmentId }, data: { checkedOutAt: new Date() } });
+  const now = new Date();
 
-  
-  if (lat != null && lng != null) {
-    await prisma.cleanerProfile.update({
-      where: { id: cleanerId },
-      data: { lastKnownLat: lat, lastKnownLng: lng, lastKnownAt: new Date() },
+  const updated = await prisma.$transaction(async (tx) => {
+    const a = await tx.bookingAssignment.update({
+      where: { id: assignmentId },
+      data: { checkedOutAt: now },
     });
-  }
 
-  await audit({ businessId, actorUserId, action: 'CLEANER_CHECKED_OUT', entityType: 'BookingAssignment', entityId: assignmentId, metadata: { lat, lng } });
+    if (lat != null && lng != null) {
+      await tx.cleanerProfile.update({
+        where: { id: cleanerId },
+        data: {
+          lastKnownLat: lat,
+          lastKnownLng: lng,
+          lastKnownAt: now,
+        },
+      });
+    }
+
+    return a;
+  });
+
+  await audit({
+    businessId,
+    actorUserId,
+    action: 'CLEANER_CHECKED_OUT',
+    entityType: 'BookingAssignment',
+    entityId: assignmentId,
+    metadata: { lat, lng, bookingId: assignment.bookingId },
+  });
 
   return updated;
 }
 
-module.exports.clockIn = clockIn;
-module.exports.clockOut = clockOut;
+module.exports = {
+  onboardCleaner,
+  offboardCleaner,
+  listCleaners,
+  setAvailability,
+  getCleanerPerformance,
+  clockIn,
+  clockOut,
+};
