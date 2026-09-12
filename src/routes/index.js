@@ -13,7 +13,7 @@ router.use('/cleaners', require('../modules/cleaners/cleaners.routes'));
 router.use('/customers', require('../modules/customers/customers.routes'));
 router.use('/services', require('../modules/services/services.routes'));
 // Cleaner self-service (must be before /bookings/:id admin routes if paths overlap)
-router.use('/bookings', require('../modules/bookings/cleanerBookings.routes'));
+router.use('/cleaner/bookings', require('../modules/bookings/cleanerBookings.routes'));
 // Admin bookings
 router.use('/bookings', require('../modules/bookings/bookings.routes'));
 router.use('/dispatch', require('../modules/dispatch/dispatch.routes'));
