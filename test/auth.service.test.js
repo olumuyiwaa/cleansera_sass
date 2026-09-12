@@ -1,35 +1,36 @@
-const path = require('path');
+/**
+ * These mocks previously used require.cache injection, which does not
+ * actually intercept anything under Jest (Jest keeps its own module
+ * registry, separate from Node's native require.cache — see
+ * test/cancellationPolicy.test.js for the full explanation). That meant
+ * this suite either failed outright in any environment without a
+ * generated Prisma client, or — in an environment with one — silently ran
+ * auth.service against the *real* database/notification/speakeasy modules
+ * while asserting against mock objects nothing ever called, without ever
+ * actually failing loudly because the calls it awaited resolved to
+ * whatever the real modules happened to return. jest.mock() is the
+ * technique that actually replaces the module.
+ */
+jest.mock('../src/config/database.js', () => ({
+  user: { findUnique: jest.fn(), update: jest.fn() },
+  passwordReset: { create: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+  otpCode: { create: jest.fn(), findFirst: jest.fn(), update: jest.fn() },
+  session: { deleteMany: jest.fn() },
+  auditLog: { create: jest.fn() },
+}));
+jest.mock('../src/lib/notificationClient.js', () => ({
+  sendEmail: jest.fn(),
+  sendSms: jest.fn(),
+  _sendEmailNow: jest.fn(),
+}));
+jest.mock('speakeasy', () => ({
+  generateSecret: jest.fn(() => ({ base32: 'BASE32', otpauth_url: 'otpauth://x' })),
+  totp: { verify: jest.fn() },
+}));
 
-// Prepare mocks by injecting into require cache before loading the service
-const dbPath = path.resolve(__dirname, '../src/config/database.js');
-const notifPath = path.resolve(__dirname, '../src/lib/notificationClient.js');
-const speakeasyPath = require.resolve('speakeasy');
-
-const mockPrisma = {
-  user: {
-    findUnique: jest.fn(),
-    update: jest.fn(),
-  },
-  passwordReset: {
-    create: jest.fn(),
-    findUnique: jest.fn(),
-    update: jest.fn(),
-  },
-  otpCode: {
-    create: jest.fn(),
-    findFirst: jest.fn(),
-    update: jest.fn(),
-  },
-};
-
-const mockNotif = { sendEmail: jest.fn(), sendSms: jest.fn(), _sendEmailNow: jest.fn() };
-
-const mockSpeakeasy = { generateSecret: jest.fn(() => ({ base32: 'BASE32', otpauth_url: 'otpauth://x' })), totp: { verify: jest.fn() } };
-
-require.cache[dbPath] = { exports: mockPrisma };
-require.cache[notifPath] = { exports: mockNotif };
-require.cache[speakeasyPath] = { exports: mockSpeakeasy };
-
+const mockPrisma = require('../src/config/database.js');
+const mockNotif = require('../src/lib/notificationClient.js');
+const mockSpeakeasy = require('speakeasy');
 const authService = require('../src/modules/auth/auth.service');
 
 describe('auth.service password reset and 2FA', () => {
@@ -52,11 +53,16 @@ describe('auth.service password reset and 2FA', () => {
     mockPrisma.passwordReset.findUnique.mockResolvedValue(pr);
     mockPrisma.user.update.mockResolvedValue({ id: 'u1' });
     mockPrisma.passwordReset.update.mockResolvedValue({});
+    mockPrisma.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockPrisma.auditLog.create.mockResolvedValue({});
 
     await authService.confirmPasswordReset('token123', 'newpass');
 
     expect(mockPrisma.user.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'u1' } }));
     expect(mockPrisma.passwordReset.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: pr.id } }));
+    // A password reset should invalidate existing sessions — otherwise a
+    // stolen session token would survive the very reset meant to kill it.
+    expect(mockPrisma.session.deleteMany).toHaveBeenCalledWith({ where: { userId: 'u1' } });
   });
 
   test('generate2FASecret stores secret and returns urls', async () => {

@@ -122,6 +122,57 @@ async function handle(req, res) {
               `Booking ${meta.bookingId} marked PAID via Checkout Session ${obj.id} (amount=${obj.amount_total})`
           );
         }
+      } else if (meta.purpose === 'deposit' && meta.bookingId) {
+        const booking = await prisma.booking.findUnique({ where: { id: meta.bookingId } });
+        if (booking && !booking.depositPaidAt) {
+          const paymentIntentId =
+              typeof obj.payment_intent === 'string' ? obj.payment_intent : obj.payment_intent?.id || null;
+
+          await prisma.booking.update({
+            where: { id: meta.bookingId },
+            data: {
+              depositPaidAt: new Date(),
+              depositRequiredCents: obj.amount_total ?? booking.depositRequiredCents,
+              stripeDepositSessionId: obj.id,
+              stripeDepositPaymentIntentId: paymentIntentId,
+              paymentStatus: booking.paymentStatus === 'UNPAID' ? 'DEPOSIT_PAID' : booking.paymentStatus,
+            },
+          });
+
+          await audit({
+            businessId: meta.businessId || booking.businessId,
+            actorUserId: null,
+            action: 'BOOKING_DEPOSIT_RECEIVED',
+            entityType: 'Booking',
+            entityId: meta.bookingId,
+            metadata: { sessionId: obj.id, paymentIntentId, amountTotal: obj.amount_total },
+          });
+        }
+      } else if (meta.purpose === 'tip' && meta.bookingId) {
+        const booking = await prisma.booking.findUnique({ where: { id: meta.bookingId } });
+        if (booking && !booking.tipPaidAt) {
+          const paymentIntentId =
+              typeof obj.payment_intent === 'string' ? obj.payment_intent : obj.payment_intent?.id || null;
+
+          await prisma.booking.update({
+            where: { id: meta.bookingId },
+            data: {
+              tipPaidAt: new Date(),
+              tipAmountCents: obj.amount_total ?? 0,
+              stripeTipSessionId: obj.id,
+              stripeTipPaymentIntentId: paymentIntentId,
+            },
+          });
+
+          await audit({
+            businessId: meta.businessId || booking.businessId,
+            actorUserId: null,
+            action: 'BOOKING_TIP_RECEIVED',
+            entityType: 'Booking',
+            entityId: meta.bookingId,
+            metadata: { sessionId: obj.id, paymentIntentId, amountTotal: obj.amount_total },
+          });
+        }
       }
     } else if (type === 'account.updated') {
       // Fires as a connected business completes/updates their Stripe Connect

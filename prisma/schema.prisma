@@ -204,14 +204,36 @@ model BusinessHours {
   @@index([businessId])
 }
 
-// Business pricing settings: frequency discounts and coupons
+// Business pricing settings: frequency discounts, coupons, deposit and
+// cancellation policy. All policy fields are nullable/optional — a business
+// that never sets them keeps today's behavior (no deposit required, no
+// cancellation fee ever charged).
 model BusinessPricing {
   id                 String   @id @default(cuid())
   businessId         String   @unique
   business           Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
   frequencyDiscounts Json? // { WEEKLY: 0.1, BIWEEKLY: 0.05 }
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+
+  // Deposit collected at booking time, before the job is scheduled/assigned.
+  // null depositType = no deposit required (today's behavior).
+  depositType  PolicyValueType?
+  depositValue Int? // percent (0-100) if PERCENT, or cents if AMOUNT
+
+  // Cancellation fee charged when a customer (or staff, on their behalf)
+  // cancels inside cancellationWindowHours of the scheduled start.
+  // null cancellationWindowHours = no fee ever charged (today's behavior),
+  // matching the previous hardcoded free-cancellation-anytime path.
+  cancellationWindowHours Int?
+  cancellationFeeType     PolicyValueType?
+  cancellationFeeValue    Int? // percent (0-100) if PERCENT, or cents if AMOUNT
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum PolicyValueType {
+  PERCENT
+  AMOUNT
 }
 
 model Coupon {
@@ -237,6 +259,12 @@ model Coupon {
 enum BusinessMemberRole {
   BUSINESS_OWNER
   BUSINESS_MANAGER
+  // Membership on a *parent* franchise Business (see Business.locations).
+  // Grants the same cross-location reach as BUSINESS_OWNER on that parent,
+  // without being an owner of any individual location. Previously
+  // referenced by scopeToBusiness.js and the /locations and /org-summary
+  // routes but never actually assignable — those code paths were dead.
+  ORG_ADMIN
 }
 
 model BusinessMember {
@@ -525,8 +553,33 @@ model Booking {
   paymentNote             String?
   cancelReason            String?
   reminderSentAt          DateTime?
-  createdAt               DateTime           @default(now())
-  updatedAt               DateTime           @updatedAt
+
+  // Deposit — collected at booking submission time when the business has a
+  // deposit policy configured (BusinessPricing.depositType). Independent of
+  // paymentStatus/amountPaidCents, which track the remaining/full job charge.
+  depositRequiredCents         Int?
+  depositPaidAt                DateTime?
+  stripeDepositSessionId       String?
+  stripeDepositPaymentIntentId String?
+
+  // Tip — collected from the customer portal after the job is COMPLETED.
+  tipAmountCents        Int?
+  tipPaidAt             DateTime?
+  stripeTipSessionId    String?
+  stripeTipPaymentIntentId String?
+
+  // Set when cancelBooking applies BusinessPricing's cancellation policy.
+  // Null if the cancellation was free (outside the window, or no policy set).
+  cancellationFeeCents Int?
+
+  // Refund of a prior deposit/job payment, issued automatically on
+  // cancellation when the fee is less than what was already paid.
+  refundedAmountCents Int?
+  refundedAt          DateTime?
+  stripeRefundId      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   assignments BookingAssignment[]
   checklist   JobChecklist?

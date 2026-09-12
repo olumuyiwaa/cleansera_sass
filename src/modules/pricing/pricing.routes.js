@@ -18,6 +18,11 @@ router.put('/', requireRole('BUSINESS_OWNER','BUSINESS_MANAGER'), [
 		}
 		return false;
 	}),
+	body('depositType').optional({ nullable: true }).isIn(['PERCENT', 'AMOUNT']),
+	body('depositValue').optional({ nullable: true }).isInt({ min: 0 }),
+	body('cancellationWindowHours').optional({ nullable: true }).isInt({ min: 0 }),
+	body('cancellationFeeType').optional({ nullable: true }).isIn(['PERCENT', 'AMOUNT']),
+	body('cancellationFeeValue').optional({ nullable: true }).isInt({ min: 0 }),
 ], validate, controller.updatePricing);
 
 router.get('/coupons', requireRole('BUSINESS_OWNER','BUSINESS_MANAGER'), controller.listCoupons);

@@ -12,7 +12,23 @@ async function getPricing(req, res, next) {
 
 async function updatePricing(req, res, next) {
   try {
-    const payload = { frequencyDiscounts: req.body.frequencyDiscounts };
+    // Whitelisted explicitly (rather than passing req.body straight
+    // through) so this endpoint can't be used to write arbitrary columns
+    // onto BusinessPricing. Undefined fields are dropped by Prisma's
+    // update, not written as null, so a partial payload only touches the
+    // keys the caller actually sent.
+    const fields = [
+      'frequencyDiscounts',
+      'depositType',
+      'depositValue',
+      'cancellationWindowHours',
+      'cancellationFeeType',
+      'cancellationFeeValue',
+    ];
+    const payload = {};
+    for (const f of fields) {
+      if (req.body[f] !== undefined) payload[f] = req.body[f];
+    }
     const updated = await service.updatePricing(req.businessId, payload);
     return success(res, 200, updated, 'Pricing updated');
   } catch (e) {

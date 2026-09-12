@@ -7,6 +7,8 @@ const crypto = require('crypto');
 const prisma = require('../../config/database');
 const notificationClient = require('../../lib/notificationClient');
 const logger = require('../../config/logger');
+const { evaluateCancellation } = require('../../lib/cancellationPolicy');
+const { createRefund, createAncillaryCheckoutSession } = require('../../lib/stripeClient');
 
 const OTP_TTL_MS = 10 * 60 * 1000;
 
@@ -136,6 +138,14 @@ async function getMyBooking(businessId, customerId, bookingId) {
   return b;
 }
 
+/**
+ * Customer self-service cancellation. Unlike the old hardcoded "must be
+ * >12h out or reject outright" rule, this always allows the cancellation
+ * (a customer who genuinely can't make it should be able to cancel any
+ * time) and instead applies the business's cancellation-fee policy — a
+ * late cancellation costs money rather than being blocked. A business that
+ * hasn't configured a policy still allows free cancellation at any time.
+ */
 async function cancelMyBooking(businessId, customerId, bookingId, reason) {
   const b = await getMyBooking(businessId, customerId, bookingId);
   if (['COMPLETED', 'CANCELLED', 'IN_PROGRESS'].includes(b.status)) {
@@ -143,17 +153,87 @@ async function cancelMyBooking(businessId, customerId, bookingId, reason) {
     err.status = 422;
     throw err;
   }
-  // Only allow cancel if more than 12 hours away
-  const hoursUntil = (new Date(b.scheduledStart) - new Date()) / 3600000;
-  if (hoursUntil < 12) {
-    const err = new Error('Cancellations must be at least 12 hours before the appointment');
+
+  const evaluation = await evaluateCancellation(businessId, b);
+
+  let refund = null;
+  if (evaluation.refundCents > 0 && evaluation.refundPaymentIntentId) {
+    try {
+      refund = await createRefund({
+        paymentIntentId: evaluation.refundPaymentIntentId,
+        amountCents: evaluation.refundCents,
+        reason: 'requested_by_customer',
+      });
+    } catch (e) {
+      logger.error('portal cancellation refund failed', { bookingId, error: e.message });
+    }
+  }
+
+  return prisma.booking.update({
+    where: { id: bookingId },
+    data: {
+      status: 'CANCELLED',
+      cancelReason: reason || 'Cancelled by customer',
+      cancellationFeeCents: evaluation.feeCents || null,
+      ...(refund
+        ? {
+            refundedAmountCents: evaluation.refundCents,
+            refundedAt: new Date(),
+            stripeRefundId: refund.id,
+            paymentStatus: evaluation.refundCents >= evaluation.alreadyPaidCents ? 'REFUNDED' : 'PARTIAL',
+          }
+        : {}),
+    },
+  });
+}
+
+/**
+ * Customer-initiated tip on a completed booking. Creates a Checkout Session
+ * for the tip amount, settled to the business's connected account with no
+ * platform application fee (the platform's 1.5% is meant to come out of the
+ * job charge, not out of a cleaner's tip).
+ */
+async function tipMyBooking(businessId, customerId, bookingId, { amountCents, successUrl, cancelUrl }) {
+  const b = await getMyBooking(businessId, customerId, bookingId);
+  if (b.status !== 'COMPLETED') {
+    const err = new Error('You can only tip on a completed booking');
     err.status = 422;
     throw err;
   }
-  return prisma.booking.update({
-    where: { id: bookingId },
-    data: { status: 'CANCELLED', cancelReason: reason || 'Cancelled by customer' },
+  if (!amountCents || amountCents < 50) {
+    const err = new Error('Tip amount must be at least 50 minor units');
+    err.status = 422;
+    throw err;
+  }
+
+  const business = await prisma.business.findUnique({
+    where: { id: businessId },
+    select: { stripeConnectedAccountId: true, stripeChargesEnabled: true },
   });
+  if (!business?.stripeChargesEnabled || !business?.stripeConnectedAccountId) {
+    const err = new Error('This business cannot accept card payments yet');
+    err.status = 402;
+    throw err;
+  }
+
+  const session = await createAncillaryCheckoutSession({
+    purpose: 'tip',
+    bookingId,
+    businessId,
+    connectedAccountId: business.stripeConnectedAccountId,
+    amountCents,
+    successUrl,
+    cancelUrl,
+    description: `Tip for booking ${bookingId}`,
+    applyPlatformFee: false,
+  });
+
+  await prisma.booking.update({
+    where: { id: bookingId },
+    data: { stripeTipSessionId: session.id },
+  });
+
+  return { url: session.url, sessionId: session.id };
 }
 
 async function rescheduleMyBooking(businessId, customerId, bookingId, { scheduledStart }) {
@@ -237,4 +317,5 @@ module.exports = {
   cancelMyBooking,
   rescheduleMyBooking,
   leaveReview,
+  tipMyBooking,
 };

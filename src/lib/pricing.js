@@ -113,4 +113,23 @@ async function calculateQuote(service, payload = {}) {
   return result;
 }
 
-module.exports = { calculateQuote };
+/**
+ * Returns the deposit amount (in cents) required at booking time for this
+ * business, or 0 if the business hasn't configured a deposit policy.
+ * Shared by the widget quote (so the customer sees it before booking) and
+ * submitBooking (so the actual checkout session matches the quote).
+ */
+async function computeDepositCents(businessId, priceCents) {
+  if (!businessId) return 0;
+  const bp = await prisma.businessPricing.findUnique({ where: { businessId } });
+  if (!bp || !bp.depositType) return 0;
+  if (bp.depositType === 'PERCENT') {
+    return Math.round((priceCents * (bp.depositValue || 0)) / 100);
+  }
+  if (bp.depositType === 'AMOUNT') {
+    return Math.min(bp.depositValue || 0, priceCents);
+  }
+  return 0;
+}
+
+module.exports = { calculateQuote, computeDepositCents };

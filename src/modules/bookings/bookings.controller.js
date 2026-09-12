@@ -99,7 +99,9 @@ module.exports.cancelRecurring = cancelRecurring;
 
 async function cancel(req, res, next) {
   try {
-    const booking = await service.cancelBooking(req.businessId, req.params.id, req.user.id, req.body.reason);
+    const booking = await service.cancelBooking(req.businessId, req.params.id, req.user.id, req.body.reason, {
+      waiveFee: !!req.body.waiveFee,
+    });
     return success(res, 200, booking, 'Booking cancelled');
   } catch (err) {
     next(err);

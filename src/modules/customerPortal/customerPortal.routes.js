@@ -40,5 +40,11 @@ router.post(
   validate,
   controller.leaveReview
 );
+router.post(
+  '/bookings/:id/tip',
+  [body('amountCents').isInt({ min: 50 })],
+  validate,
+  controller.tipBooking
+);
 
 module.exports = router;

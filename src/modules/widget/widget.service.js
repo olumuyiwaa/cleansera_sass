@@ -1,5 +1,47 @@
 const prisma = require('../../config/database');
 const { isWithinServiceAreas } = require('../../utils/geo');
+const { createAncillaryCheckoutSession } = require('../../lib/stripeClient');
+
+/**
+ * Creates the deposit Checkout Session for a freshly-created booking, when
+ * the business has a deposit policy configured and enough is charged to
+ * clear Stripe's minimum. Stores the session id on the booking and returns
+ * its checkout URL so the widget can redirect the customer to pay before
+ * the booking is treated as confirmed. Returns null (not an error) when no
+ * deposit is required, or when the business hasn't finished Stripe Connect
+ * onboarding — a booking should still succeed even if card collection
+ * isn't available yet; it just stays payable manually.
+ */
+async function maybeCreateDepositSession(businessId, booking) {
+  const pricing = require('../../lib/pricing');
+  const depositRequiredCents = await pricing.computeDepositCents(businessId, booking.quotedPriceCents);
+  if (!depositRequiredCents || depositRequiredCents < 50) return null;
+
+  const business = await prisma.business.findUnique({
+    where: { id: businessId },
+    select: { stripeConnectedAccountId: true, stripeChargesEnabled: true },
+  });
+  if (!business?.stripeChargesEnabled || !business?.stripeConnectedAccountId) return null;
+
+  const customer = await prisma.customer.findUnique({ where: { id: booking.customerId } });
+
+  const session = await createAncillaryCheckoutSession({
+    purpose: 'deposit',
+    bookingId: booking.id,
+    businessId,
+    connectedAccountId: business.stripeConnectedAccountId,
+    amountCents: depositRequiredCents,
+    customerEmail: customer?.email || undefined,
+    description: `Deposit for booking ${booking.id}`,
+  });
+
+  await prisma.booking.update({
+    where: { id: booking.id },
+    data: { depositRequiredCents, stripeDepositSessionId: session.id },
+  });
+
+  return { url: session.url, sessionId: session.id, depositRequiredCents };
+}
 
 async function getStorefront(businessId) {
   const business = await prisma.business.findUnique({
@@ -71,6 +113,9 @@ async function quote(businessId, {
     }
   }
 
+  const { computeDepositCents } = pricing;
+  const depositRequiredCents = await computeDepositCents(businessId, quote.priceCents);
+
   return {
     serviceId,
     addOnIds,
@@ -78,6 +123,7 @@ async function quote(businessId, {
     estimatedMinutes: quote.breakdown.estimatedMinutes,
     breakdown: quote.breakdown,
     coupon: quote.coupon,
+    depositRequiredCents: depositRequiredCents || 0,
   };
 }
 
@@ -141,7 +187,9 @@ async function submitBooking(businessId, payload) {
     const booking = result.booking;
     const customer = result.customer;
     try { const notifications = require('../notifications/notifications.service'); await notifications.notifyBookingCreated(businessId, booking); await notifications.sendCustomerBookingConfirmation(businessId, booking, customer); } catch (e) {}
-    return booking;
+    let deposit = null;
+    try { deposit = await maybeCreateDepositSession(businessId, booking); } catch (e) { /* non-fatal — booking still succeeds without card collection */ }
+    return { ...booking, deposit };
   }
 
   const customer = await prisma.customer.upsert({
@@ -177,10 +225,12 @@ async function submitBooking(businessId, payload) {
     // non-fatal
   }
 
-  return booking;
+  let deposit = null;
+  try { deposit = await maybeCreateDepositSession(businessId, booking); } catch (e) { /* non-fatal */ }
+  return { ...booking, deposit };
 }
 
-module.exports = { getStorefront, quote, submitBooking };
+module.exports = { getStorefront, quote, submitBooking, maybeCreateDepositSession };
 
 /**
  * Return available time slots for a given date and service. Query: ?serviceId=&date=YYYY-MM-DD&slotMinutes=&startHour=&endHour=&limit=

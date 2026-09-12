@@ -64,6 +64,15 @@ async function leaveReview(req, res, next) {
   }
 }
 
+async function tipBooking(req, res, next) {
+  try {
+    const data = await service.tipMyBooking(req.businessId, req.portalCustomerId, req.params.id, req.body);
+    return success(res, 200, data, 'Tip checkout session created');
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   requestAccess,
   verifyAccess,
@@ -72,4 +81,5 @@ module.exports = {
   cancelBooking,
   rescheduleBooking,
   leaveReview,
+  tipBooking,
 };

@@ -171,6 +171,87 @@ async function createBookingCheckoutSession({
   return session;
 }
 
+/**
+ * Creates a Checkout Session for a one-time charge unrelated to the main
+ * job payment — a deposit taken at booking time, or a post-completion tip.
+ * Shares the same Connect destination-charge shape as
+ * createBookingCheckoutSession (funds settle on the business's connected
+ * account, minus an optional platform fee), just parameterized by purpose
+ * and amount so callers don't have to duplicate the Stripe call shape.
+ */
+async function createAncillaryCheckoutSession({
+  purpose, // 'deposit' | 'tip'
+  bookingId,
+  businessId,
+  connectedAccountId,
+  amountCents,
+  currency = 'usd',
+  customerEmail,
+  successUrl,
+  cancelUrl,
+  description,
+  applyPlatformFee = true,
+}) {
+  if (!process.env.STRIPE_SECRET_KEY) {
+    const err = new Error('STRIPE_SECRET_KEY is not configured');
+    err.status = 503;
+    throw err;
+  }
+  if (!connectedAccountId) {
+    const err = new Error('Business has not completed Stripe Connect onboarding');
+    err.status = 402;
+    throw err;
+  }
+  if (!amountCents || amountCents < 50) {
+    const err = new Error('Amount must be at least 50 minor units');
+    err.status = 422;
+    throw err;
+  }
+
+  const applicationFeeAmount = applyPlatformFee ? Math.floor((amountCents * getApplicationFeeBps()) / 10000) : 0;
+
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    payment_method_types: ['card'],
+    line_items: [
+      {
+        price_data: {
+          currency: (currency || 'usd').toLowerCase(),
+          product_data: { name: description || `Cleaning ${purpose} ${bookingId}` },
+          unit_amount: amountCents,
+        },
+        quantity: 1,
+      },
+    ],
+    payment_intent_data: {
+      transfer_data: { destination: connectedAccountId },
+      ...(applicationFeeAmount > 0 ? { application_fee_amount: applicationFeeAmount } : {}),
+    },
+    customer_email: customerEmail || undefined,
+    success_url: successUrl || `${process.env.APP_URL || 'http://localhost:3000'}/portal?payment=success&bookingId=${bookingId}`,
+    cancel_url: cancelUrl || `${process.env.APP_URL || 'http://localhost:3000'}/portal?payment=cancelled&bookingId=${bookingId}`,
+    metadata: { bookingId, businessId, purpose },
+  });
+
+  return session;
+}
+
+/**
+ * Refunds a prior charge, either fully (amountCents omitted) or partially —
+ * partial is what cancellationPolicy.evaluateCancellation asks for when a
+ * cancellation fee is owed. Returns null (rather than throwing) when there's
+ * no payment intent to refund against, so callers can treat "nothing to
+ * refund" as a normal outcome instead of an error path.
+ */
+async function createRefund({ paymentIntentId, amountCents, reason }) {
+  if (!paymentIntentId) return null;
+  return stripe.refunds.create({
+    payment_intent: paymentIntentId,
+    ...(amountCents != null ? { amount: amountCents } : {}),
+    reason: reason || 'requested_by_customer',
+  });
+}
+
 module.exports = {
   createCustomerForBusiness,
   createSubscription,
@@ -179,5 +260,7 @@ module.exports = {
   createConnectAccountAndLink,
   getConnectAccountStatus,
   createBookingCheckoutSession,
+  createAncillaryCheckoutSession,
+  createRefund,
   stripe,
 };

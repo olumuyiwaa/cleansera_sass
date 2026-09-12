@@ -2,8 +2,9 @@ const prisma = require('../../config/database');
 const { audit } = require('../../utils/audit');
 const notifications = require('../notifications/notifications.service');
 const logger = require('../../config/logger');
-const { createBookingCheckoutSession } = require('../../lib/stripeClient');
+const { createBookingCheckoutSession, createAncillaryCheckoutSession, createRefund } = require('../../lib/stripeClient');
 const { computeInitialRunDate } = require('../../utils/timezone');
+const { evaluateCancellation } = require('../../lib/cancellationPolicy');
 
 async function listBookings(businessId, { status } = {}, requester = null) {
   const cleanerScope =
@@ -414,18 +415,62 @@ async function resumeRecurringSchedule(businessId, id, actorUserId) {
   return { id, isActive: true };
 }
 
-async function cancelBooking(businessId, bookingId, actorUserId, reason) {
+async function cancelBooking(businessId, bookingId, actorUserId, reason, options = {}) {
+  const { waiveFee = false } = options;
   const booking = await getBookingById(businessId, bookingId);
   if (booking.status === 'COMPLETED' || booking.status === 'CANCELLED') {
     const err = new Error(`Cannot cancel a booking that is already ${booking.status}`);
     err.status = 422;
     throw err;
   }
+
+  // waiveFee lets staff override the policy (e.g. business-caused
+  // cancellation) without touching BusinessPricing itself.
+  const evaluation = waiveFee
+    ? { feeCents: 0, refundCents: 0, alreadyPaidCents: 0, refundPaymentIntentId: null }
+    : await evaluateCancellation(businessId, booking);
+
+  let refund = null;
+  if (evaluation.refundCents > 0 && evaluation.refundPaymentIntentId) {
+    try {
+      refund = await createRefund({
+        paymentIntentId: evaluation.refundPaymentIntentId,
+        amountCents: evaluation.refundCents,
+        reason: 'requested_by_customer',
+      });
+    } catch (e) {
+      logger.error('cancellation refund failed', { bookingId, error: e.message });
+      // Fall through — the booking still gets cancelled; the fee/refund
+      // numbers are recorded so a human can reconcile the failed refund
+      // manually rather than the cancellation silently succeeding with no
+      // trace of money owed.
+    }
+  }
+
   const updated = await prisma.booking.update({
     where: { id: bookingId },
-    data: { status: 'CANCELLED', cancelReason: reason || null },
+    data: {
+      status: 'CANCELLED',
+      cancelReason: reason || null,
+      cancellationFeeCents: evaluation.feeCents || null,
+      ...(refund
+        ? {
+            refundedAmountCents: evaluation.refundCents,
+            refundedAt: new Date(),
+            stripeRefundId: refund.id,
+            paymentStatus: evaluation.refundCents >= evaluation.alreadyPaidCents ? 'REFUNDED' : 'PARTIAL',
+          }
+        : {}),
+    },
   });
-  await audit({ businessId, actorUserId, action: 'BOOKING_CANCELLED', entityType: 'Booking', entityId: bookingId, metadata: { reason } });
+  await audit({
+    businessId,
+    actorUserId,
+    action: 'BOOKING_CANCELLED',
+    entityType: 'Booking',
+    entityId: bookingId,
+    metadata: { reason, feeCents: evaluation.feeCents, refundCents: refund ? evaluation.refundCents : 0 },
+  });
   try {
     await notifications.notifyBookingCancelled(businessId, updated);
   } catch (e) { /* non-fatal */ }
