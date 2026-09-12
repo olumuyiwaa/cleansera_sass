@@ -180,7 +180,55 @@ async function issueSession(userId, businessId, meta = {}) {
     },
   });
 
-  return { accessToken, refreshToken };
+  // Bundle the resolved identity into the token response so clients (the
+  // cleaner app in particular) don't need a second round-trip just to know
+  // who just logged in. Kept lightweight — full self-service detail (own
+  // availability, documents) still lives behind /cleaners/me/*.
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, email: true, firstName: true, lastName: true, phone: true, avatarKey: true },
+  });
+
+  let cleanerProfile = null;
+  if (businessId) {
+    const membership = await prisma.businessMember.findFirst({
+      where: { businessId, userId, isActive: true },
+    });
+    if (!membership) {
+      const cleaner = await prisma.cleanerProfile.findFirst({
+        where: { businessId, userId, status: 'ACTIVE' },
+        include: { business: { select: { id: true, name: true } } },
+      });
+      if (cleaner) {
+        cleanerProfile = {
+          id: cleaner.id,
+          businessId: cleaner.businessId,
+          userId: cleaner.userId,
+          status: cleaner.status,
+          hireDate: cleaner.hireDate,
+          businessName: cleaner.business.name,
+          serviceAreaIds: cleaner.serviceAreaIds,
+        };
+      }
+    }
+  }
+
+  let avatarUrl = null;
+  if (user?.avatarKey) {
+    try {
+      const { getSignedDownloadUrl } = require('../../config/storage');
+      avatarUrl = await getSignedDownloadUrl(user.avatarKey);
+    } catch (e) {
+      avatarUrl = null;
+    }
+  }
+
+  return {
+    accessToken,
+    refreshToken,
+    user: user ? { ...user, avatarUrl } : null,
+    cleanerProfile,
+  };
 }
 
 async function refresh(refreshToken) {

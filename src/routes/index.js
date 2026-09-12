@@ -9,10 +9,14 @@ router.use('/auth', require('../modules/auth/auth.routes'));
 router.use('/businesses', require('../modules/businesses/businesses.routes'));
 router.use('/businesses/pricing', require('../modules/pricing/pricing.routes'));
 router.use('/subscriptions', require('../modules/subscriptions/subscriptions.routes'));
+// Cleaner self-service (own profile/availability/documents) — registered
+// before the admin /cleaners router so /cleaners/me/* is handled here first;
+// Express falls through to the admin router for everything else under /cleaners.
+router.use('/cleaners', require('../modules/cleanerSelf/cleanerSelf.routes'));
 router.use('/cleaners', require('../modules/cleaners/cleaners.routes'));
 router.use('/customers', require('../modules/customers/customers.routes'));
 router.use('/services', require('../modules/services/services.routes'));
-// Cleaner self-service (must be before /bookings/:id admin routes if paths overlap)
+// Cleaner self-service — own assigned jobs only (must be before /bookings/:id admin routes if paths overlap)
 router.use('/cleaner/bookings', require('../modules/bookings/cleanerBookings.routes'));
 // Admin bookings
 router.use('/bookings', require('../modules/bookings/bookings.routes'));

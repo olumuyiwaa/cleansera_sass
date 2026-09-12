@@ -13,5 +13,6 @@ router.post('/', controller.create);
 router.get('/:bookingId', controller.get);
 router.put('/:bookingId', controller.update);
 router.delete('/:bookingId', controller.remove);
+router.post('/:bookingId/items/:itemId/complete', controller.completeItem);
 
 module.exports = router;

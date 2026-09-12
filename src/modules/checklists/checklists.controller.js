@@ -46,4 +46,19 @@ async function remove(req, res, next) {
   }
 }
 
-module.exports = { list, get, create, update, remove };
+async function completeItem(req, res, next) {
+  try {
+    const result = await service.completeChecklistItem(
+      req.businessId,
+      req.params.bookingId,
+      req.params.itemId,
+      req.body?.done,
+      req.user
+    );
+    return success(res, 200, result, 'Checklist item updated');
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { list, get, create, update, remove, completeItem };

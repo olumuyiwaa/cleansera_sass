@@ -1,24 +1,24 @@
 /**
- * Cleaner-facing booking routes (aliases matching the Flutter app contract).
+ * Cleaner-facing booking routes — self-service, scoped to the caller's own
+ * assigned jobs only.
  *
- * Mount in src/routes/index.js (or equivalent) as:
- *   router.use('/bookings', require('../modules/bookings/cleanerBookings.routes'));
+ * Mounted in src/routes/index.js as:
+ *   router.use('/cleaner/bookings', require('../modules/bookings/cleanerBookings.routes'));
  *
- * Or merge the handlers into the main bookings router carefully so
- * /bookings/my is registered BEFORE /bookings/:id.
- *
- * Expected Flutter contract:
- *   GET  /bookings/my?from=&to=&status=
- *   GET  /bookings/:id
- *   POST /bookings/:id/check-in   { lat?, lng? }
- *   POST /bookings/:id/start
- *   POST /bookings/:id/complete  { lat?, lng?, notes? }
+ * Full contract (see also cleanerSelf.routes.js for /cleaner/me,
+ * /cleaner/availability, /cleaner/documents):
+ *   GET  /cleaner/bookings/my?from=&to=&status=
+ *   GET  /cleaner/bookings/:id
+ *   POST /cleaner/bookings/:id/check-in   { lat?, lng? }
+ *   POST /cleaner/bookings/:id/start
+ *   POST /cleaner/bookings/:id/complete  { lat?, lng?, notes? }
  */
 
 const express = require('express');
 const { body } = require('express-validator');
 const prisma = require('../../config/database');
 const { authenticate } = require('../../middleware/authenticate');
+const { requireActiveCleaner } = require('../../middleware/requireActiveCleaner');
 const validate = require('../../middleware/validate');
 const { success } = require('../../utils/response');
 const bookingsService = require('./bookings.service');
@@ -26,29 +26,7 @@ const cleanersService = require('../cleaners/cleaners.service');
 
 const router = express.Router();
 
-router.use(authenticate);
-
-/** Resolve ACTIVE cleaner profile for the logged-in user (any business). */
-async function requireActiveCleaner(req, res, next) {
-  try {
-    const cleaner = await prisma.cleanerProfile.findFirst({
-      where: { userId: req.user.id, status: 'ACTIVE' },
-      include: { business: true },
-    });
-    if (!cleaner) {
-      const err = new Error('Active cleaner profile not found');
-      err.status = 403;
-      throw err;
-    }
-    req.cleaner = cleaner;
-    req.businessId = cleaner.businessId;
-    next();
-  } catch (err) {
-    next(err);
-  }
-}
-
-router.use(requireActiveCleaner);
+router.use(authenticate, requireActiveCleaner);
 
 /**
  * GET /bookings/my

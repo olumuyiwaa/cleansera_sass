@@ -9,7 +9,10 @@ const router = express.Router();
 
 router.use(authenticate, scopeToBusiness);
 
-router.get('/', controller.list);
+// Business-wide cleaner roster (names, emails, phones). Staff-only — a
+// cleaner has their own record via /cleaners/me and no legitimate need to
+// browse their coworkers' contact details.
+router.get('/', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.list);
 
 router.post(
   '/',
