@@ -82,6 +82,24 @@ async function documentDownloadUrl(req, res, next) {
   }
 }
 
+async function registerDeviceToken(req, res, next) {
+  try {
+    await service.registerDeviceToken(req.cleaner, req.body);
+    return success(res, 200, { registered: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function unregisterDeviceToken(req, res, next) {
+  try {
+    await service.unregisterDeviceToken(req.cleaner, req.body.token);
+    return success(res, 200, { registered: false });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   getProfile,
   updateProfile,
@@ -92,4 +110,6 @@ module.exports = {
   documentUploadUrl,
   createDocument,
   documentDownloadUrl,
+  registerDeviceToken,
+  unregisterDeviceToken,
 };

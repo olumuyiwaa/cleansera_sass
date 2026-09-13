@@ -72,9 +72,36 @@ async function notifyCleanerAssigned(businessId, booking, cleanerUserId) {
   try {
     const n = await prisma.notification.create({ data: { businessId, recipientUserId: cleanerUserId, type: 'ASSIGNMENT', title, body } });
     try { getIo().to(`user:${cleanerUserId}`).emit('assignment', { booking, notification: n }); } catch (e) { /* ignore */ }
+    await pushToCleanerByUserId(cleanerUserId, {
+      title: 'New job assigned',
+      body: `You've been assigned a new job on ${new Date(booking.scheduledStart).toLocaleString()}.`,
+      data: { type: 'ASSIGNMENT', bookingId: booking.id },
+    });
     return n;
   } catch (e) {
     logger.error('failed to notify cleaner assignment', e);
+  }
+}
+
+/**
+ * Sends an FCM push to every device a cleaner (identified by their userId,
+ * matching how assignment notifications already address cleaners) has
+ * registered, then prunes any tokens Firebase reports as dead — cheap
+ * housekeeping so CleanerDeviceToken doesn't accumulate rows for
+ * uninstalled apps forever.
+ */
+async function pushToCleanerByUserId(cleanerUserId, { title, body, data }) {
+  try {
+    const cleaner = await prisma.cleanerProfile.findFirst({ where: { userId: cleanerUserId }, select: { id: true } });
+    if (!cleaner) return;
+    const tokens = await prisma.cleanerDeviceToken.findMany({ where: { cleanerId: cleaner.id }, select: { token: true } });
+    if (tokens.length === 0) return;
+    const result = await notificationClient.sendPush({ tokens: tokens.map((t) => t.token), title, body, data });
+    if (result?.invalidTokens?.length) {
+      await prisma.cleanerDeviceToken.deleteMany({ where: { token: { in: result.invalidTokens } } });
+    }
+  } catch (e) {
+    logger.error('failed to push to cleaner', e);
   }
 }
 
@@ -82,7 +109,36 @@ async function listForBusiness(businessId, userId) {
   return prisma.notification.findMany({ where: { businessId, recipientUserId: userId }, orderBy: { createdAt: 'desc' }, take: 200 });
 }
 
-module.exports = { sendInvite, notifyBookingCreated, sendCustomerBookingConfirmation, notifyCleanerAssigned, listForBusiness };
+module.exports = { sendInvite, notifyBookingCreated, sendCustomerBookingConfirmation, notifyCleanerAssigned, pushToCleanerByUserId, listForBusiness };
+
+/**
+ * SMS (preferred, since most customers aren't logged into any app) + email
+ * fallback triggered when a cleaner taps "On my way". There's no customer
+ * mobile app in this product, so unlike notifyCleanerAssigned this can't be
+ * a push notification — SMS/email are the only channels that reach the
+ * customer directly.
+ */
+async function notifyOnMyWay(business, booking, customer) {
+  const etaNote = "They'll arrive shortly.";
+  const smsBody = `${business.name}: your cleaner is on their way! ${etaNote}`;
+  try {
+    if (customer?.phone) {
+      await notificationClient.sendSms({ to: customer.phone, body: smsBody });
+    }
+    if (customer?.email) {
+      await notificationClient.sendEmail({
+        to: customer.email,
+        subject: `${business.name}: your cleaner is on the way`,
+        text: smsBody,
+        html: `<p>${smsBody}</p>`,
+      });
+    }
+  } catch (e) {
+    logger.error('failed to send on-my-way notification', e);
+  }
+}
+
+module.exports.notifyOnMyWay = notifyOnMyWay;
 
 async function notifyMembers(businessId, type, title, body, extraEmit) {
   const members = await prisma.businessMember.findMany({ where: { businessId, isActive: true } });
@@ -158,3 +214,16 @@ module.exports.sendBookingReminder = sendBookingReminder;
 module.exports.notifyBookingCancelled = notifyBookingCancelled;
 module.exports.notifyBookingRescheduled = notifyBookingRescheduled;
 module.exports.requestReview = requestReview;
+
+async function notifyRecurringConflict(businessId, schedule, conflictingBooking, occurrenceStart) {
+  return notifyMembers(
+      businessId,
+      'RECURRING_CONFLICT',
+      'Recurring booking skipped — scheduling conflict',
+      `Recurring schedule ${schedule.id} was due to create a booking for ${occurrenceStart.toISOString()} ` +
+      `but the customer already has booking ${conflictingBooking.id} overlapping that time. No booking was created — please review and reschedule manually.`,
+      { event: 'recurring_conflict', payload: { scheduleId: schedule.id, conflictingBookingId: conflictingBooking.id, occurrenceStart } }
+  );
+}
+
+module.exports.notifyRecurringConflict = notifyRecurringConflict;

@@ -216,6 +216,49 @@ async function updateHours(businessId, hours) {
   return listHours(businessId);
 }
 
+// ============================================================
+// ONBOARDING STATUS
+// ============================================================
+// A business shouldn't go live on the public booking widget (or start
+// dispatching cleaners) until the minimum setup is done. Rather than a hard
+// server-side block — which would be confusing if it silently 500'd on a
+// half-configured business — this exposes a checklist the dashboard uses to
+// force new owners through setup before they can use the rest of the app.
+const ONBOARDING_STEPS = [
+  { key: 'stripeConnect', label: 'Connect Stripe to accept customer payments' },
+  { key: 'services', label: 'Add at least one service' },
+  { key: 'hours', label: 'Set your business hours' },
+  { key: 'serviceAreas', label: 'Define at least one service area' },
+];
+
+async function getOnboardingStatus(businessId) {
+  const [business, serviceCount, hoursCount, areaCount] = await Promise.all([
+    prisma.business.findUnique({
+      where: { id: businessId },
+      select: { stripeConnectOnboarded: true, stripeChargesEnabled: true },
+    }),
+    prisma.service.count({ where: { businessId, isActive: true } }),
+    prisma.businessHours.count({ where: { businessId } }),
+    prisma.serviceArea.count({ where: { businessId } }),
+  ]);
+
+  const completed = {
+    stripeConnect: !!(business?.stripeConnectOnboarded && business?.stripeChargesEnabled),
+    services: serviceCount > 0,
+    hours: hoursCount > 0,
+    serviceAreas: areaCount > 0,
+  };
+
+  const steps = ONBOARDING_STEPS.map((s) => ({ ...s, complete: completed[s.key] }));
+  const isComplete = steps.every((s) => s.complete);
+
+  return {
+    isComplete,
+    steps,
+    nextIncompleteStep: steps.find((s) => !s.complete)?.key || null,
+  };
+}
+
 module.exports = {
   listBusinesses,
   updateBusiness,
@@ -237,4 +280,6 @@ module.exports = {
   // Franchise / multi-location
   listLocations,
   createLocation,
+  // Onboarding
+  getOnboardingStatus,
 };

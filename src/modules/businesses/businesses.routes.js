@@ -9,6 +9,13 @@ const { requireRole } = require('../../middleware/authenticate');
 router.use(authenticate, scopeToBusiness);
 
 router.get('/', controller.list);
+
+// Setup checklist the dashboard uses to force new businesses through Stripe
+// Connect + services + hours + service areas before treating them as fully
+// live. Open to any authenticated business member (not owner/manager-only)
+// since the dashboard shell checks this on every load to decide whether to
+// redirect at all.
+router.get('/onboarding-status', controller.getOnboardingStatus);
 router.put('/', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.update);
 
 router.get('/branding', controller.getBranding);

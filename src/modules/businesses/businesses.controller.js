@@ -163,4 +163,13 @@ async function createLocation(req, res, next) {
   }
 }
 
-module.exports = { list, update, getBranding, updateBranding, addAddress, updateAddress, removeAddress, listServiceAreas, createServiceArea, updateServiceArea, deleteServiceArea, listHours, updateHours, getStripeConnectStatus, startStripeConnectOnboarding, refreshStripeConnectStatus, listLocations, createLocation };
+async function getOnboardingStatus(req, res, next) {
+  try {
+    const s = await service.getOnboardingStatus(req.businessId);
+    return success(res, 200, s);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { list, update, getBranding, updateBranding, addAddress, updateAddress, removeAddress, listServiceAreas, createServiceArea, updateServiceArea, deleteServiceArea, listHours, updateHours, getStripeConnectStatus, startStripeConnectOnboarding, refreshStripeConnectStatus, listLocations, createLocation, getOnboardingStatus };

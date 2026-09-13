@@ -6,7 +6,7 @@ const { advanceRunDate } = require('../utils/timezone');
 async function processOnce() {
   const now = new Date();
   const schedules = await prisma.recurringSchedule.findMany({
-    where: { isActive: true, nextRunDate: { lte: now } },
+    where: { status: 'ACTIVE', nextRunDate: { lte: now } },
     include: {
       customer: { include: { addresses: true } },
       service: true,
@@ -30,7 +30,7 @@ async function processOnce() {
         });
         await prisma.recurringSchedule.update({
           where: { id: s.id },
-          data: { isActive: false },
+          data: { status: 'CANCELLED' },
         });
         errorCount += 1;
         continue;
@@ -61,6 +61,37 @@ async function processOnce() {
 
       // Compute next run date first so we can update it even on P2002
       const nextRunDate = advanceRunDate(s.nextRunDate, s.frequency, s.startTime, timezone);
+
+      // Conflict check: has this customer got another (non-cancelled) booking
+      // that overlaps this occurrence? This can happen if they also booked a
+      // one-off job for the same slot, or if two recurring schedules were
+      // created before the creation-time conflict check below existed.
+      // Rather than silently double-booking the customer, skip this
+      // occurrence, flag it, and let a human resolve it.
+      const conflict = await prisma.booking.findFirst({
+        where: {
+          businessId: s.businessId,
+          customerId: s.customerId,
+          status: { notIn: ['CANCELLED'] },
+          scheduledStart: { lt: end },
+          scheduledEnd: { gt: start },
+        },
+      });
+      if (conflict) {
+        await prisma.recurringSchedule.update({ where: { id: s.id }, data: { nextRunDate } });
+        logger.warn('Recurring occurrence conflicts with an existing booking, skipped', {
+          scheduleId: s.id,
+          conflictingBookingId: conflict.id,
+          occurrenceStart: start.toISOString(),
+        });
+        try {
+          await notifications.notifyRecurringConflict(s.businessId, s, conflict, start);
+        } catch (notifyErr) {
+          logger.warn('Failed to notify recurring conflict', { scheduleId: s.id, error: notifyErr.message });
+        }
+        skippedCount += 1;
+        continue;
+      }
 
       let booking = null;
       let wasDuplicate = false;
@@ -155,7 +186,20 @@ async function processOnce() {
   return { scanned: schedules.length, created: createdCount, skipped: skippedCount, errors: errorCount };
 }
 
-// Keep the same export / CLI entrypoint contract
+// NOTE: this module intentionally does not schedule its own cron. Scheduling
+// lives in recurringDaemon.js (npm run recurring-daemon) — running both would
+// double-create recurring bookings on every tick. This file exports
+// processOnce() for the daemon to call, and can still be run directly for a
+// single manual pass (e.g. from a one-off script or a Kubernetes Job).
+//
+// FIXED: this file previously had *two* `if (require.main === module) {...}`
+// blocks back to back. Both conditions are true on a direct `node
+// recurringWorker.js` run, and neither awaits the other, so processOnce() was
+// being kicked off twice concurrently on every manual/Job run (the unique
+// constraint on (recurringScheduleId, scheduledStart) prevented duplicate
+// bookings, but the run still did the scan/notify work twice and could exit
+// with whichever pass's exit code happened to land second). Consolidated
+// into a single block.
 if (require.main === module) {
   processOnce()
       .then((stats) => {
@@ -166,18 +210,6 @@ if (require.main === module) {
         logger.error('recurring worker (single pass) failed', e);
         process.exit(1);
       });
-}
-
-// NOTE: this module intentionally does not schedule its own cron. Scheduling
-// lives in recurringDaemon.js (npm run recurring-daemon) — running both would
-// double-create recurring bookings on every tick. This file exports
-// processOnce() for the daemon to call, and can still be run directly for a
-// single manual pass (e.g. from a one-off script or a Kubernetes Job).
-if (require.main === module) {
-  processOnce().catch((e) => {
-    logger.error('recurring worker (single pass) failed', e);
-    process.exit(1);
-  });
 }
 
 module.exports = { processOnce };

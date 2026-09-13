@@ -30,6 +30,25 @@ if (process.env.SENDGRID_API_KEY) {
   sendgrid.setApiKey(process.env.SENDGRID_API_KEY);
 }
 
+// Push (Firebase Cloud Messaging) — same optional-dependency, graceful-
+// fallback shape as SMTP/Twilio above: if firebase-admin isn't installed or
+// FIREBASE_SERVICE_ACCOUNT_JSON isn't set, sendPush() just logs and resolves
+// instead of throwing, so the cleaner app / backend keep working in dev or
+// in any deployment that hasn't wired push up yet.
+let fcmApp;
+try {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    const admin = require('firebase-admin');
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    fcmApp = admin.apps.length
+      ? admin.app()
+      : admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+  }
+} catch (e) {
+  logger.error('Failed to initialize firebase-admin for push notifications', e);
+  fcmApp = undefined;
+}
+
 async function _sendEmailNow({ to, subject, text, html, from }) {
   from = from || process.env.EMAIL_FROM || 'no-reply@cleansera.example';
   if (process.env.SENDGRID_API_KEY) {
@@ -57,6 +76,36 @@ async function _sendSmsNow({ to, body }) {
   return twClient.messages.create({ body, from: process.env.TWILIO_FROM, to });
 }
 
+/**
+ * tokens: string | string[] of FCM registration tokens.
+ * Returns { successCount, failureCount, invalidTokens } so callers can prune
+ * dead tokens from CleanerDeviceToken — a token goes invalid whenever the
+ * app is uninstalled, so this list will be non-empty in steady state.
+ */
+async function _sendPushNow({ tokens, title, body, data }) {
+  const tokenList = (Array.isArray(tokens) ? tokens : [tokens]).filter(Boolean);
+  if (!fcmApp || tokenList.length === 0) {
+    logger.info('sendPush fallback (no Firebase configured or no tokens):', { title, body, tokenCount: tokenList.length });
+    return { successCount: 0, failureCount: 0, invalidTokens: [] };
+  }
+
+  const admin = require('firebase-admin');
+  const message = {
+    tokens: tokenList,
+    notification: { title, body },
+    data: Object.fromEntries(Object.entries(data || {}).map(([k, v]) => [k, String(v)])),
+  };
+
+  const res = await admin.messaging(fcmApp).sendEachForMulticast(message);
+  const invalidTokens = [];
+  res.responses.forEach((r, i) => {
+    if (!r.success && ['messaging/invalid-registration-token', 'messaging/registration-token-not-registered'].includes(r.error?.code)) {
+      invalidTokens.push(tokenList[i]);
+    }
+  });
+  return { successCount: res.successCount, failureCount: res.failureCount, invalidTokens };
+}
+
 async function sendEmail(payload) {
   if (process.env.NOTIFICATION_QUEUE === 'true' && queue) {
     await queue.add('email', payload, { attempts: 5 });
@@ -73,4 +122,12 @@ async function sendSms(payload) {
   return _sendSmsNow(payload);
 }
 
-module.exports = { sendEmail, sendSms, _sendEmailNow, _sendSmsNow };
+async function sendPush(payload) {
+  if (process.env.NOTIFICATION_QUEUE === 'true' && queue) {
+    await queue.add('push', payload, { attempts: 3 });
+    return { queued: true };
+  }
+  return _sendPushNow(payload);
+}
+
+module.exports = { sendEmail, sendSms, sendPush, _sendEmailNow, _sendSmsNow, _sendPushNow };

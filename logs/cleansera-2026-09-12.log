@@ -69,3 +69,4 @@
 {"level":"error","message":"Active cleaner profile not found","path":"/api/v1/bookings/recurring","stack":"Error: Active cleaner profile not found\n    at requireActiveCleaner (/Users/emmanuel.oladoyin/StudioProjects/cleansera_new/cleansera-api/src/modules/bookings/cleanerBookings.routes.js:39:19)","timestamp":"2026-09-12T00:17:16.961Z"}
 {"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-12T00:20:34.763Z"}
 {"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-12T17:29:34.879Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-12T22:06:31.996Z"}

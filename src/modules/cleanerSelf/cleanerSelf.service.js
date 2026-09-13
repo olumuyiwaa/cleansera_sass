@@ -148,4 +148,25 @@ module.exports = {
   getMyDocumentUploadUrl,
   createMyDocument,
   getMyDocumentDownloadUrl,
+  registerDeviceToken,
+  unregisterDeviceToken,
 };
+
+/**
+ * Upserts the FCM registration token for this cleaner's device. Called on
+ * every app start (not just first install) since a token can rotate, and
+ * upserting is cheap/idempotent — matches how most push-notification setups
+ * work rather than trying to detect "is this a new token".
+ */
+async function registerDeviceToken(cleaner, { token, platform }) {
+  return prisma.cleanerDeviceToken.upsert({
+    where: { cleanerId_token: { cleanerId: cleaner.id, token } },
+    update: { lastSeenAt: new Date(), platform: platform || undefined },
+    create: { cleanerId: cleaner.id, token, platform },
+  });
+}
+
+/** Called on logout so a shared/reset device stops receiving this cleaner's pushes. */
+async function unregisterDeviceToken(cleaner, token) {
+  await prisma.cleanerDeviceToken.deleteMany({ where: { cleanerId: cleaner.id, token } });
+}

@@ -28,6 +28,8 @@
  *   POST /cleaners/me/documents/upload-url   { contentType?, filename? }
  *   POST /cleaners/me/documents              { title, storageKey, type?, mimeType?, fileSize?, expiresAt?, notes? }
  *   GET  /cleaners/me/documents/:id/download-url
+ *   POST   /cleaners/me/device-token          { token, platform? }
+ *   DELETE /cleaners/me/device-token          { token }
  */
 
 const express = require('express');
@@ -77,5 +79,13 @@ router.post(
   controller.createDocument
 );
 router.get('/me/documents/:id/download-url', controller.documentDownloadUrl);
+
+router.post(
+  '/me/device-token',
+  [body('token').notEmpty(), body('platform').optional().isIn(['ios', 'android'])],
+  validate,
+  controller.registerDeviceToken
+);
+router.delete('/me/device-token', [body('token').notEmpty()], validate, controller.unregisterDeviceToken);
 
 module.exports = router;

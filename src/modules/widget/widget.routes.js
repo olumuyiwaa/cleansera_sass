@@ -16,6 +16,8 @@ const bookingValidators = [
   body('city').trim().notEmpty(),
   body('state').trim().notEmpty(),
   body('scheduledStart').isISO8601(),
+  body('couponCode').optional().isString(),
+  body('referralCode').optional().isString().isLength({ max: 20 }),
 ];
 
 /** Mounts the storefront/quote/slots/bookings endpoints behind whichever tenant-resolution middleware is passed in. */

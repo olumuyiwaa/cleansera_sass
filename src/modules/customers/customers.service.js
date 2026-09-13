@@ -66,7 +66,7 @@ async function getCustomer(businessId, id) {
         take: 50,
         include: { service: true, assignments: { include: { cleaner: { include: { user: true } } } } },
       },
-      recurringSchedules: { where: { isActive: true } },
+      recurringSchedules: { where: { status: 'ACTIVE' } },
       reviews: true,
     },
   });
@@ -75,7 +75,44 @@ async function getCustomer(businessId, id) {
     err.status = 404;
     throw err;
   }
+  if (!c.referralCode) {
+    c.referralCode = await ensureReferralCode(c.id);
+  }
   return c;
+}
+
+/**
+ * Lazily assigns a referral code to a customer that doesn't have one yet —
+ * covers both customers created before this feature existed and the normal
+ * signup path, so there's no separate backfill migration to run. Retries on
+ * the rare collision instead of trusting randomness alone, since the column
+ * is unique.
+ */
+async function ensureReferralCode(customerId) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = generateReferralCode();
+    try {
+      const updated = await prisma.customer.update({
+        where: { id: customerId },
+        data: { referralCode: code },
+        select: { referralCode: true },
+      });
+      return updated.referralCode;
+    } catch (e) {
+      if (e.code === 'P2002') continue; // collision on referralCode — retry with a new one
+      throw e;
+    }
+  }
+  throw new Error('Could not generate a unique referral code');
+}
+
+function generateReferralCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I ambiguity
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return code;
 }
 
 async function updateCustomer(businessId, id, actorUserId, patch) {
@@ -177,4 +214,5 @@ module.exports = {
   addAddress,
   updateAddress,
   deleteAddress,
+  ensureReferralCode,
 };

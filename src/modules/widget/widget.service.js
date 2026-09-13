@@ -52,7 +52,13 @@ async function getStorefront(businessId) {
     where: { businessId, isActive: true },
     include: { addOns: true },
   });
-  return { business, services };
+  const areaCount = await prisma.serviceArea.count({ where: { businessId } });
+  // Soft signal only — the widget stays fully loadable either way so a
+  // business mid-setup can still preview it, but the frontend uses this to
+  // show a "not yet accepting online bookings" state instead of a booking
+  // form with no services/areas to actually select.
+  const onboardingComplete = services.length > 0 && business?.hours?.length > 0 && areaCount > 0;
+  return { business, services, onboardingComplete };
 }
 
 async function quote(businessId, {
@@ -136,7 +142,7 @@ async function submitBooking(businessId, payload) {
     firstName, lastName, email, phone,
     addressLine1, addressLine2, city, state, latitude, longitude,
     serviceId, addOnIds = [], scheduledStart,
-    couponCode,
+    couponCode, referralCode,
   } = payload;
 
   const { priceCents, estimatedMinutes, coupon: couponInfo } = await quote(businessId, { serviceId, addOnIds, latitude, longitude, scheduledStart, couponCode });
@@ -192,11 +198,27 @@ async function submitBooking(businessId, payload) {
     return { ...booking, deposit };
   }
 
+  // Referral program (only when no manual coupon was applied — the two
+  // discounts aren't designed to stack, to keep the pricing math and the
+  // reward-issuing logic below from getting tangled with coupon redemption
+  // limits).
+  const REFERRAL_DISCOUNT_CENTS = 1000; // new customer gets $10 off
+  const REFERRAL_REWARD_CENTS = 1000; // referrer gets a $10-off coupon for next time
+
+  const existingCustomer = await prisma.customer.findFirst({ where: { businessId, phone } });
+  let referrer = null;
+  if (referralCode && !existingCustomer) {
+    referrer = await prisma.customer.findFirst({ where: { businessId, referralCode: referralCode.toUpperCase() } });
+  }
+  const referralDiscountCents = referrer ? Math.min(REFERRAL_DISCOUNT_CENTS, priceCents) : 0;
+  const finalPriceCents = priceCents - referralDiscountCents;
+
   const customer = await prisma.customer.upsert({
     where: { businessId_phone: { businessId, phone } },
     update: { firstName, lastName, email },
     create: { businessId, firstName, lastName, email, phone },
   });
+  const customerReferralCode = customer.referralCode || (await require('../customers/customers.service').ensureReferralCode(customer.id));
 
   const booking = await prisma.booking.create({
     data: {
@@ -211,8 +233,9 @@ async function submitBooking(businessId, payload) {
       longitude,
       scheduledStart: start,
       scheduledEnd: end,
-      quotedPriceCents: priceCents,
+      quotedPriceCents: finalPriceCents,
       status: 'REQUESTED',
+      referredByCustomerId: referrer?.id || null,
     },
   });
 
@@ -225,9 +248,36 @@ async function submitBooking(businessId, payload) {
     // non-fatal
   }
 
+  // Reward the referrer with a single-use coupon, delivered only to them via
+  // SMS/email — there's no per-customer scoping column on Coupon, so a
+  // freshly generated, only-shared-with-them code is what keeps this
+  // effectively "theirs" rather than a code anyone could guess and use.
+  if (referrer) {
+    try {
+      const rewardCode = `REF-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+      await prisma.coupon.create({
+        data: {
+          businessId,
+          code: rewardCode,
+          type: 'AMOUNT',
+          value: REFERRAL_REWARD_CENTS,
+          maxRedemptions: 1,
+          expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+        },
+      });
+      const notificationClient = require('../../lib/notificationClient');
+      const business = await prisma.business.findUnique({ where: { id: businessId } });
+      const rewardMsg = `${business.name}: thanks for the referral! Use code ${rewardCode} for $10 off your next booking.`;
+      if (referrer.phone) await notificationClient.sendSms({ to: referrer.phone, body: rewardMsg });
+      if (referrer.email) await notificationClient.sendEmail({ to: referrer.email, subject: `${business.name}: your referral reward`, text: rewardMsg, html: `<p>${rewardMsg}</p>` });
+    } catch (e) {
+      // non-fatal — the referred customer's discount already applied regardless
+    }
+  }
+
   let deposit = null;
   try { deposit = await maybeCreateDepositSession(businessId, booking); } catch (e) { /* non-fatal */ }
-  return { ...booking, deposit };
+  return { ...booking, deposit, referralCode: customerReferralCode, referralDiscountCents };
 }
 
 module.exports = { getStorefront, quote, submitBooking, maybeCreateDepositSession };

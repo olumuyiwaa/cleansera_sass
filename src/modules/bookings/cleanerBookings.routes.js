@@ -12,6 +12,9 @@
  *   POST /cleaner/bookings/:id/check-in   { lat?, lng? }
  *   POST /cleaner/bookings/:id/start
  *   POST /cleaner/bookings/:id/complete  { lat?, lng?, notes? }
+ *   POST /cleaner/bookings/:id/on-my-way
+ *   POST /cleaner/bookings/:id/photos/upload-url  { stage, contentType?, filename? }
+ *   POST /cleaner/bookings/:id/photos             { stage, storageKey }
  */
 
 const express = require('express');
@@ -188,6 +191,108 @@ router.post(
         notes: req.body.notes,
       });
       return success(res, 200, updated, 'Booking completed');
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * POST /bookings/:id/on-my-way
+ * Sends an SMS/email to the customer letting them know the cleaner is
+ * headed over. No body required — this is a one-tap action in the app.
+ */
+router.post('/:id/on-my-way', async (req, res, next) => {
+  try {
+    const assignment = await prisma.bookingAssignment.findFirst({
+      where: { bookingId: req.params.id, cleanerId: req.cleaner.id },
+      include: { booking: { include: { customer: true, business: true } } },
+    });
+    if (!assignment) {
+      const err = new Error('You are not assigned to this booking');
+      err.status = 403;
+      throw err;
+    }
+    if (assignment.checkedInAt) {
+      const err = new Error("This job is already checked in — 'on my way' no longer applies.");
+      err.status = 409;
+      throw err;
+    }
+
+    const notificationsService = require('../notifications/notifications.service');
+    await notificationsService.notifyOnMyWay(assignment.booking.business, assignment.booking, assignment.booking.customer);
+
+    const updated = await prisma.bookingAssignment.update({
+      where: { id: assignment.id },
+      data: { onMyWayAt: new Date() },
+    });
+    return success(res, 200, updated, 'Customer notified');
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /bookings/:id/photos/upload-url
+ * Body: { stage: 'BEFORE' | 'AFTER', contentType?, filename? }
+ * Step 1 of photo proof: get a presigned URL, then PUT the image bytes to
+ * it directly from the app, then call POST /photos below to register it.
+ */
+router.post(
+  '/:id/photos/upload-url',
+  [
+    body('stage').isIn(['BEFORE', 'AFTER']),
+    body('contentType').optional().isString(),
+    body('filename').optional().isString(),
+  ],
+  validate,
+  async (req, res, next) => {
+    try {
+      const assignment = await prisma.bookingAssignment.findFirst({
+        where: { bookingId: req.params.id, cleanerId: req.cleaner.id },
+      });
+      if (!assignment) {
+        const err = new Error('You are not assigned to this booking');
+        err.status = 403;
+        throw err;
+      }
+      const { getSignedUploadUrl } = require('../../config/storage');
+      const safeName = (req.body.filename || 'photo.jpg').replace(/[^a-zA-Z0-9._-]/g, '_');
+      const key = `businesses/${req.cleaner.businessId}/bookings/${req.params.id}/photos/${req.body.stage}/${Date.now()}-${safeName}`;
+      const uploadUrl = await getSignedUploadUrl(key, req.body.contentType || 'image/jpeg');
+      return success(res, 200, { uploadUrl, storageKey: key });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * POST /bookings/:id/photos
+ * Body: { stage: 'BEFORE' | 'AFTER', storageKey }
+ * Step 2: register the photo after the upload above completes. This is
+ * cleaner-accessible on purpose — the admin-only POST /storage endpoint
+ * can't be used here, since the person taking before/after photos on site
+ * is the cleaner, not the business owner/manager.
+ */
+router.post(
+  '/:id/photos',
+  [body('stage').isIn(['BEFORE', 'AFTER']), body('storageKey').notEmpty()],
+  validate,
+  async (req, res, next) => {
+    try {
+      const assignment = await prisma.bookingAssignment.findFirst({
+        where: { bookingId: req.params.id, cleanerId: req.cleaner.id },
+      });
+      if (!assignment) {
+        const err = new Error('You are not assigned to this booking');
+        err.status = 403;
+        throw err;
+      }
+      const photo = await prisma.jobPhoto.create({
+        data: { bookingId: req.params.id, stage: req.body.stage, storageKey: req.body.storageKey },
+      });
+      return success(res, 201, photo, 'Photo saved');
     } catch (err) {
       next(err);
     }

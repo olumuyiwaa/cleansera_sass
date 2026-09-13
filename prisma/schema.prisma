@@ -366,6 +366,7 @@ model CleanerProfile {
   assignments  BookingAssignment[]
   documents    CleanerDocument[]
   reviews      Review[]
+  deviceTokens CleanerDeviceToken[]
 
   // One profile per person per business — not per person globally. A
   // cleaner offboarded by Business A can be onboarded fresh by Business B
@@ -374,6 +375,23 @@ model CleanerProfile {
   @@index([businessId])
   @@index([businessId, status])
   @@index([userId])
+}
+
+// FCM registration token for the cleaner mobile app, so the backend can push
+// "you've been assigned a new job" / schedule-change notifications straight
+// to the cleaner's phone instead of relying on them opening the app.
+// Multiple rows per cleaner is expected (one per installed device).
+model CleanerDeviceToken {
+  id         String         @id @default(cuid())
+  cleanerId  String
+  cleaner    CleanerProfile @relation(fields: [cleanerId], references: [id], onDelete: Cascade)
+  token      String
+  platform   String? // "ios" | "android"
+  createdAt  DateTime       @default(now())
+  lastSeenAt DateTime       @default(now())
+
+  @@unique([cleanerId, token])
+  @@index([cleanerId])
 }
 
 model CleanerAvailability {
@@ -392,16 +410,22 @@ model CleanerAvailability {
 // ============================================================
 
 model Customer {
-  id         String   @id @default(cuid())
-  businessId String
-  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  firstName  String
-  lastName   String
-  email      String?
-  phone      String
-  notes      String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id           String   @id @default(cuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  firstName    String
+  lastName     String
+  email        String?
+  phone        String
+  notes        String?
+  // Shareable code for referral-a-friend. Generated lazily (see
+  // customers.service.js ensureReferralCode) rather than at every insert
+  // site, the same lazy-assignment pattern this codebase already uses for
+  // checklist item ids — existing customers created before this feature
+  // just get one the first time they're read.
+  referralCode String?  @unique
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   addresses          CustomerAddress[]
   bookings           Booking[]
@@ -500,26 +524,39 @@ enum RecurrenceFrequency {
   MONTHLY
 }
 
+// ACTIVE: generating bookings on schedule.
+// PAUSED: temporarily suspended by the business/customer; can be resumed.
+// CANCELLED: terminal state; can never be resumed (a new schedule must be
+// created instead). Replaces the old single `isActive` boolean, which could
+// not tell "paused" and "cancelled" apart, so resuming a cancelled schedule
+// was indistinguishable from resuming a paused one.
+enum RecurringScheduleStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
 model RecurringSchedule {
-  id                String              @id @default(cuid())
+  id                String                  @id @default(cuid())
   businessId        String
-  business          Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business          Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
   customerId        String
-  customer          Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customer          Customer                @relation(fields: [customerId], references: [id], onDelete: Cascade)
   serviceId         String
-  service           Service             @relation(fields: [serviceId], references: [id])
+  service           Service                 @relation(fields: [serviceId], references: [id])
   customerAddressId String?
-  customerAddress   CustomerAddress?    @relation(fields: [customerAddressId], references: [id])
+  customerAddress   CustomerAddress?        @relation(fields: [customerAddressId], references: [id])
   frequency         RecurrenceFrequency
   dayOfWeek         Int
   startTime         String
-  isActive          Boolean             @default(true)
+  status            RecurringScheduleStatus @default(ACTIVE)
   nextRunDate       DateTime
-  createdAt         DateTime            @default(now())
+  createdAt         DateTime                @default(now())
 
   bookings Booking[]
 
   @@index([businessId])
+  @@index([status, nextRunDate])
 }
 
 model Booking {
@@ -544,6 +581,11 @@ model Booking {
   quotedPriceCents        Int
   couponId                String?
   coupon                  Coupon?            @relation(fields: [couponId], references: [id])
+  // Set when this booking was placed using another customer's referral
+  // code. Kept even though the discount itself is just baked into
+  // quotedPriceCents, purely so "referrals converted" is reportable later
+  // without re-deriving it from notification logs.
+  referredByCustomerId    String?
   // Bookkeeping only — CleanSera does not process this payment
   paymentStatus           PaymentStatus      @default(UNPAID)
   stripeCheckoutSessionId String?
@@ -605,6 +647,12 @@ model BookingAssignment {
   cleanerId    String
   cleaner      CleanerProfile @relation(fields: [cleanerId], references: [id])
   assignedAt   DateTime       @default(now())
+  // Set when the cleaner taps "On my way" in the app — triggers an SMS/email
+  // to the customer. Nullable/repeatable (not a strict state machine field)
+  // since a cleaner might tap it, get delayed, and the business may want to
+  // allow a re-send; the notification itself is what matters, this is just
+  // an audit/idempotency timestamp of the most recent send.
+  onMyWayAt    DateTime?
   checkedInAt  DateTime?
   checkedOutAt DateTime?
   checkInLat   Float?

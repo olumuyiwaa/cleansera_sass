@@ -42,6 +42,34 @@ async function getBookingById(businessId, id, requester = null) {
   return b;
 }
 
+/**
+ * Guards against the same customer ending up with two overlapping jobs on
+ * the books — most commonly caused by an accidental double-submit on the
+ * booking widget, or a one-off booking created for a slot a recurring
+ * schedule already occupies. This only checks the *requesting customer's*
+ * own bookings; cleaner-availability conflicts are handled separately by
+ * findAvailableCleaners()/assignBooking() at dispatch time.
+ */
+async function assertNoCustomerConflict(businessId, customerId, start, end, excludeBookingId = null) {
+  const overlapping = await prisma.booking.findFirst({
+    where: {
+      businessId,
+      customerId,
+      status: { notIn: ['CANCELLED'] },
+      ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),
+      scheduledStart: { lt: end },
+      scheduledEnd: { gt: start },
+    },
+  });
+  if (overlapping) {
+    const err = new Error('This customer already has another booking scheduled during that time window.');
+    err.status = 409;
+    err.code = 'BOOKING_TIME_CONFLICT';
+    err.conflictingBookingId = overlapping.id;
+    throw err;
+  }
+}
+
 async function createBooking(businessId, actorUserId, payload) {
   const { customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart, sqft, rooms, addOnIds, frequency, couponCode } = payload;
   const service = await prisma.service.findFirst({ where: { id: serviceId, businessId }, include: { addOns: true } });
@@ -61,6 +89,8 @@ async function createBooking(businessId, actorUserId, payload) {
 
   const start = new Date(scheduledStart);
   const end = new Date(start.getTime() + (quote.breakdown.estimatedMinutes || service.estimatedMinutes) * 60 * 1000);
+
+  await assertNoCustomerConflict(businessId, customerId, start, end);
 
   // If couponCode provided, validate and enforce redemption limits within a transaction
   if (couponCode) {
@@ -312,6 +342,17 @@ async function completeBookingByCleaner(bookingId, cleanerUserId, { lat, lng, no
     throw err;
   }
 
+  // Photo proof: require at least one AFTER photo before a job can be
+  // marked complete. Without this, "photo proof" would just be an optional
+  // upload button nobody uses under time pressure on-site.
+  const afterPhotoCount = await prisma.jobPhoto.count({ where: { bookingId, stage: 'AFTER' } });
+  if (afterPhotoCount === 0) {
+    const err = new Error('Add at least one after-photo before marking this job complete.');
+    err.status = 400;
+    err.code = 'PHOTO_PROOF_REQUIRED';
+    throw err;
+  }
+
   // Record check-out
   await prisma.bookingAssignment.update({
     where: { id: assignment.id },
@@ -365,6 +406,32 @@ async function createRecurringSchedule(businessId, actorUserId, payload) {
   const business = await prisma.business.findUnique({ where: { id: businessId } });
   const nextRunDate = computeInitialRunDate(dayOfWeek, startTime, business.timezone);
 
+  // Conflict check: does this customer already have an active/paused recurring
+  // schedule for the same day-of-week + start time (optionally same address)?
+  // Two schedules landing on the same slot every cycle is almost always a
+  // mistake (double-entry, or a rebook that should have edited the existing
+  // one instead), so we block it up front rather than letting the daemon
+  // silently generate two overlapping bookings down the line.
+  const conflicting = await prisma.recurringSchedule.findFirst({
+    where: {
+      businessId,
+      customerId,
+      dayOfWeek,
+      startTime,
+      status: { in: ['ACTIVE', 'PAUSED'] },
+      ...(customerAddressId ? { customerAddressId } : {}),
+    },
+  });
+  if (conflicting) {
+    const err = new Error(
+      'This customer already has a recurring schedule at that day and time. Edit or cancel the existing one instead of creating a duplicate.'
+    );
+    err.status = 409;
+    err.code = 'RECURRING_SCHEDULE_CONFLICT';
+    err.conflictingScheduleId = conflicting.id;
+    throw err;
+  }
+
   const created = await prisma.recurringSchedule.create({
     data: { businessId, customerId, serviceId, customerAddressId, frequency, dayOfWeek, startTime, nextRunDate },
   });
@@ -387,7 +454,7 @@ async function cancelRecurringSchedule(businessId, id, actorUserId) {
     err.status = 404;
     throw err;
   }
-  await prisma.recurringSchedule.update({ where: { id }, data: { isActive: false } });
+  await prisma.recurringSchedule.update({ where: { id }, data: { status: 'CANCELLED' } });
   await audit({ businessId, actorUserId, action: 'RECURRING_CANCELLED', entityType: 'RecurringSchedule', entityId: id });
 }
 
@@ -398,9 +465,14 @@ async function pauseRecurringSchedule(businessId, id, actorUserId) {
     err.status = 404;
     throw err;
   }
-  await prisma.recurringSchedule.update({ where: { id }, data: { isActive: false } });
+  if (rs.status === 'CANCELLED') {
+    const err = new Error('This schedule was cancelled and cannot be paused. Create a new schedule instead.');
+    err.status = 409;
+    throw err;
+  }
+  await prisma.recurringSchedule.update({ where: { id }, data: { status: 'PAUSED' } });
   await audit({ businessId, actorUserId, action: 'RECURRING_PAUSED', entityType: 'RecurringSchedule', entityId: id });
-  return { id, isActive: false };
+  return { id, status: 'PAUSED' };
 }
 
 async function resumeRecurringSchedule(businessId, id, actorUserId) {
@@ -410,9 +482,36 @@ async function resumeRecurringSchedule(businessId, id, actorUserId) {
     err.status = 404;
     throw err;
   }
-  await prisma.recurringSchedule.update({ where: { id }, data: { isActive: true } });
+  // This is the fix for the original bug: a cancelled schedule must never be
+  // resumable, only a paused one. Previously both states shared the same
+  // isActive=false flag, so this check was impossible to make.
+  if (rs.status === 'CANCELLED') {
+    const err = new Error('This schedule was cancelled and cannot be resumed. Create a new schedule instead.');
+    err.status = 409;
+    throw err;
+  }
+  // Re-run the same conflict check as creation, since another schedule may
+  // have been created in this slot while this one was paused.
+  const conflicting = await prisma.recurringSchedule.findFirst({
+    where: {
+      id: { not: id },
+      businessId,
+      customerId: rs.customerId,
+      dayOfWeek: rs.dayOfWeek,
+      startTime: rs.startTime,
+      status: { in: ['ACTIVE', 'PAUSED'] },
+      ...(rs.customerAddressId ? { customerAddressId: rs.customerAddressId } : {}),
+    },
+  });
+  if (conflicting) {
+    const err = new Error('Cannot resume: another recurring schedule now occupies this day and time for this customer.');
+    err.status = 409;
+    err.code = 'RECURRING_SCHEDULE_CONFLICT';
+    throw err;
+  }
+  await prisma.recurringSchedule.update({ where: { id }, data: { status: 'ACTIVE' } });
   await audit({ businessId, actorUserId, action: 'RECURRING_RESUMED', entityType: 'RecurringSchedule', entityId: id });
-  return { id, isActive: true };
+  return { id, status: 'ACTIVE' };
 }
 
 async function cancelBooking(businessId, bookingId, actorUserId, reason, options = {}) {
