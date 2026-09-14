@@ -122,26 +122,32 @@ model Business {
   stripeChargesEnabled     Boolean @default(false)
   stripePayoutsEnabled     Boolean @default(false)
 
-  branding           BusinessBranding?
-  addresses          BusinessAddress[]
-  serviceAreas       ServiceArea[]
-  hours              BusinessHours[]
-  members            BusinessMember[]
-  cleaners           CleanerProfile[]
-  customers          Customer[]
-  services           Service[]
-  bookings           Booking[]
-  recurringSchedules RecurringSchedule[]
-  reviews            Review[]
-  conversations      Conversation[]
-  notifications      Notification[]
-  subscription       BusinessSubscription?
-  pricing            BusinessPricing?
-  coupons            Coupon[]
-  auditLogs          AuditLog[]
-  ChecklistTemplate  ChecklistTemplate[]
-  supportTickets     SupportTicket[]
-  cleanerDocuments   CleanerDocument[]
+  branding             BusinessBranding?
+  addresses            BusinessAddress[]
+  serviceAreas         ServiceArea[]
+  hours                BusinessHours[]
+  members              BusinessMember[]
+  cleaners             CleanerProfile[]
+  customers            Customer[]
+  services             Service[]
+  bookings             Booking[]
+  recurringSchedules   RecurringSchedule[]
+  reviews              Review[]
+  conversations        Conversation[]
+  notifications        Notification[]
+  subscription         BusinessSubscription?
+  pricing              BusinessPricing?
+  coupons              Coupon[]
+  auditLogs            AuditLog[]
+  ChecklistTemplate    ChecklistTemplate[]
+  supportTickets       SupportTicket[]
+  cleanerDocuments     CleanerDocument[]
+  inventoryItems       InventoryItem[]
+  inventoryLocations   InventoryLocation[]
+  stockMovements       StockMovement[]
+  complianceDocuments  ComplianceDocument[]
+  chemicalTrainingAcks ChemicalTrainingAck[]
+  complianceAudits     ComplianceAudit[]
 
   @@index([subdomain])
   @@index([parentBusinessId])
@@ -367,6 +373,7 @@ model CleanerProfile {
   documents    CleanerDocument[]
   reviews      Review[]
   deviceTokens CleanerDeviceToken[]
+  trainingAcks ChemicalTrainingAck[]
 
   // One profile per person per business — not per person globally. A
   // cleaner offboarded by Business A can be onboarded fresh by Business B
@@ -605,9 +612,9 @@ model Booking {
   stripeDepositPaymentIntentId String?
 
   // Tip — collected from the customer portal after the job is COMPLETED.
-  tipAmountCents        Int?
-  tipPaidAt             DateTime?
-  stripeTipSessionId    String?
+  tipAmountCents           Int?
+  tipPaidAt                DateTime?
+  stripeTipSessionId       String?
   stripeTipPaymentIntentId String?
 
   // Set when cancelBooking applies BusinessPricing's cancellation policy.
@@ -623,10 +630,11 @@ model Booking {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  assignments BookingAssignment[]
-  checklist   JobChecklist?
-  photos      JobPhoto[]
-  review      Review?
+  assignments     BookingAssignment[]
+  checklist       JobChecklist?
+  photos          JobPhoto[]
+  review          Review?
+  inventoryUsages JobInventoryUsage[]
 
   // Prevents the recurring daemon from double-creating a booking for the
   // same schedule + slot if it runs twice (two replicas, a retried tick,
@@ -876,4 +884,198 @@ model SupportTicketMessage {
   createdAt  DateTime      @default(now())
 
   @@index([ticketId])
+}
+
+// ============================================================
+// INVENTORY
+// ============================================================
+
+enum InventoryItemType {
+  SUPPLY
+  CHEMICAL
+  EQUIPMENT
+  PPE
+  OTHER
+}
+
+enum StockMovementType {
+  PURCHASE
+  ADJUSTMENT
+  USAGE
+  TRANSFER
+  RETURN
+  WRITE_OFF
+}
+
+model InventoryItem {
+  id              String            @id @default(cuid())
+  businessId      String
+  business        Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name            String
+  sku             String?
+  type            InventoryItemType @default(SUPPLY)
+  description     String?
+  unit            String            @default("each")
+  reorderPoint    Int?
+  reorderQuantity Int?
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  isHazardous  Boolean             @default(false)
+  manufacturer String?
+  casNumber    String?
+  hazardClass  String?
+  sdsId        String?
+  sds          ComplianceDocument? @relation("CurrentSds", fields: [sdsId], references: [id])
+
+  stockLevels InventoryStock[]
+  movements   StockMovement[]
+  jobUsages   JobInventoryUsage[]
+
+  @@unique([businessId, sku])
+  @@index([businessId])
+  @@index([businessId, type])
+  @@index([businessId, isActive])
+}
+
+model InventoryLocation {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String
+  type       String   @default("WAREHOUSE")
+  address    String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  stockLevels   InventoryStock[]
+  movementsFrom StockMovement[]  @relation("FromLocation")
+  movementsTo   StockMovement[]  @relation("ToLocation")
+
+  @@index([businessId])
+}
+
+model InventoryStock {
+  id         String            @id @default(cuid())
+  itemId     String
+  item       InventoryItem     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  locationId String
+  location   InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  quantity   Int               @default(0)
+  updatedAt  DateTime          @updatedAt
+
+  @@unique([itemId, locationId])
+  @@index([itemId])
+  @@index([locationId])
+}
+
+model StockMovement {
+  id             String             @id @default(cuid())
+  businessId     String
+  business       Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  itemId         String
+  item           InventoryItem      @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  type           StockMovementType
+  quantity       Int
+  fromLocationId String?
+  fromLocation   InventoryLocation? @relation("FromLocation", fields: [fromLocationId], references: [id])
+  toLocationId   String?
+  toLocation     InventoryLocation? @relation("ToLocation", fields: [toLocationId], references: [id])
+  bookingId      String?
+  notes          String?
+  performedById  String?
+  createdAt      DateTime           @default(now())
+
+  @@index([businessId])
+  @@index([itemId])
+  @@index([bookingId])
+  @@index([createdAt])
+}
+
+model JobInventoryUsage {
+  id         String        @id @default(cuid())
+  bookingId  String
+  booking    Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  itemId     String
+  item       InventoryItem @relation(fields: [itemId], references: [id])
+  quantity   Int
+  notes      String?
+  recordedBy String?
+  createdAt  DateTime      @default(now())
+
+  @@index([bookingId])
+  @@index([itemId])
+}
+
+// ============================================================
+// COMPLIANCE
+// ============================================================
+
+enum ComplianceDocType {
+  SDS
+  RISK_ASSESSMENT
+  COSHH_ASSESSMENT
+  TRAINING_RECORD
+  INSPECTION_REPORT
+  CERTIFICATE
+  OTHER
+}
+
+model ComplianceDocument {
+  id           String            @id @default(cuid())
+  businessId   String
+  business     Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  type         ComplianceDocType @default(SDS)
+  title        String
+  storageKey   String
+  mimeType     String?
+  fileSize     Int?
+  version      String?
+  effectiveAt  DateTime?
+  expiresAt    DateTime?
+  notes        String?
+  uploadedById String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  inventoryItems InventoryItem[] @relation("CurrentSds")
+
+  @@index([businessId])
+  @@index([businessId, type])
+  @@index([expiresAt])
+}
+
+model ChemicalTrainingAck {
+  id             String         @id @default(cuid())
+  businessId     String
+  business       Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  cleanerId      String
+  cleaner        CleanerProfile @relation(fields: [cleanerId], references: [id], onDelete: Cascade)
+  documentId     String
+  acknowledgedAt DateTime       @default(now())
+  notes          String?
+
+  @@unique([cleanerId, documentId])
+  @@index([businessId])
+  @@index([cleanerId])
+}
+
+model ComplianceAudit {
+  id          String   @id @default(cuid())
+  businessId  String
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  title       String
+  type        String
+  status      String   @default("OPEN")
+  findings    Json?
+  score       Int?
+  conductedAt DateTime
+  conductedBy String?
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([businessId])
+  @@index([businessId, status])
 }

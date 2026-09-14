@@ -45,5 +45,7 @@ router.use('/portal', require('../modules/customerPortal/customerPortal.routes')
 router.use('/demo-requests', require('../modules/demoRequests/demoRequests.routes'));
 router.use('/support', require('../modules/supportContact/supportContact.routes'));
 router.use('/calendar', require('../modules/calendar/calendar.routes'));
+router.use('/inventory', require('../modules/inventory/inventory.routes'));
+router.use('/compliance', require('../modules/compliance/compliance.routes'));
 
 module.exports = router;
