@@ -5,6 +5,9 @@ const router = express.Router();
 // Auth + tenant onboarding
 router.use('/auth', require('../modules/auth/auth.routes'));
 
+// Super Admin — platform-wide oversight (not tenant-scoped)
+router.use('/super-admin', require('../modules/superAdmin/superAdmin.routes'));
+
 // Business dashboard (authenticated, tenant-scoped)
 router.use('/businesses', require('../modules/businesses/businesses.routes'));
 router.use('/businesses/pricing', require('../modules/pricing/pricing.routes'));
