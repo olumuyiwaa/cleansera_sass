@@ -32,6 +32,17 @@ async function createAssignment(businessId, bookingId, cleanerId, actorUserId) {
   }
   let pickReason = 'manual';
   if (!chosenCleaner) {
+    // Auto-pick is the same Growth+ "autoDispatch" feature as GET
+    // /dispatch/suggest — gated here too since this is the other path to
+    // the scheduler (posting an assignment with no cleanerId).
+    const { hasPlanFeature } = require('../../lib/planFeatures');
+    const allowed = await hasPlanFeature(businessId, 'autoDispatch');
+    if (!allowed) {
+      const err = new Error("Auto-suggested dispatch isn't included in your current plan. Pick a cleaner manually, or upgrade to use it.");
+      err.status = 402;
+      throw err;
+    }
+
     // Ranked by travel distance/ETA with workload as a tiebreaker — see
     // lib/scheduler.js. The top candidate is an actual recommendation now,
     // not just whichever row Postgres happened to return first.

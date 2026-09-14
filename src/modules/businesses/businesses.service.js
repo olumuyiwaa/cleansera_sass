@@ -73,6 +73,14 @@ async function listBusinesses(businessId) {
   });
 }
 
+// Fields a BUSINESS_OWNER/BUSINESS_MANAGER can actually change through this
+// endpoint. Previously this spread req.body straight into prisma's update,
+// which meant a business-settings request could also silently rewrite
+// stripeConnectedAccountId, isActive, parentBusinessId, or anything else on
+// the model. The dashboard's own updateBusiness() type already only ever
+// sends these three fields — this just makes the backend enforce it too.
+const PATCHABLE_BUSINESS_FIELDS = ['name', 'timezone', 'customDomain'];
+
 async function updateBusiness(businessId, patch) {
   const b = await prisma.business.findUnique({ where: { id: businessId } });
   if (!b) {
@@ -80,7 +88,27 @@ async function updateBusiness(businessId, patch) {
     err.status = 404;
     throw err;
   }
-  const updated = await prisma.business.update({ where: { id: businessId }, data: patch });
+
+  const data = {};
+  for (const key of PATCHABLE_BUSINESS_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) data[key] = patch[key];
+  }
+
+  // Custom domain is a Pro-tier feature per the pricing page. Only check it
+  // when the value is actually changing, so a business that already has one
+  // set (e.g. downgraded plans later) isn't broken by re-saving other
+  // unrelated settings on this same form.
+  if ('customDomain' in data && data.customDomain !== b.customDomain) {
+    const { hasPlanFeature } = require('../../lib/planFeatures');
+    const allowed = await hasPlanFeature(businessId, 'customDomain');
+    if (!allowed) {
+      const err = new Error("Custom domains aren't included in your current plan. Upgrade to Pro to use one.");
+      err.status = 402;
+      throw err;
+    }
+  }
+
+  const updated = await prisma.business.update({ where: { id: businessId }, data });
   return updated;
 }
 

@@ -2,6 +2,7 @@ jest.mock('../src/config/database.js', () => ({
   booking: { findFirst: jest.fn(), update: jest.fn() },
   cleanerProfile: { findFirst: jest.fn() },
   bookingAssignment: { create: jest.fn(), findMany: jest.fn() },
+  businessSubscription: { findUnique: jest.fn() },
 }));
 jest.mock('../src/utils/audit', () => ({ audit: jest.fn() }));
 jest.mock('../src/lib/scheduler', () => ({ findAvailableCleaners: jest.fn() }));
@@ -72,5 +73,30 @@ describe('dispatch.service.createAssignment', () => {
       status: 409,
     });
     expect(mockPrisma.bookingAssignment.create).not.toHaveBeenCalled();
+  });
+
+  test('auto-pick is blocked with a 402 when the business plan has autoDispatch disabled', async () => {
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.businessSubscription.findUnique.mockResolvedValue({
+      plan: { features: { autoDispatch: false } },
+    });
+    await expect(dispatchService.createAssignment('biz1', 'bk1', null, 'user1')).rejects.toMatchObject({
+      status: 402,
+    });
+    expect(scheduler.findAvailableCleaners).not.toHaveBeenCalled();
+  });
+
+  test('manual assignment (explicit cleanerId) is unaffected by the autoDispatch plan gate', async () => {
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    mockPrisma.cleanerProfile.findFirst.mockResolvedValue({ id: 'cleaner-x', businessId: 'biz1', status: 'ACTIVE' });
+    mockPrisma.businessSubscription.findUnique.mockResolvedValue({
+      plan: { features: { autoDispatch: false } },
+    });
+    mockPrisma.bookingAssignment.create.mockResolvedValue({ id: 'assign1', bookingId: 'bk1', cleanerId: 'cleaner-x' });
+
+    const result = await dispatchService.createAssignment('biz1', 'bk1', 'cleaner-x', 'user1');
+
+    expect(result.cleanerId).toBe('cleaner-x');
+    expect(scheduler.findAvailableCleaners).not.toHaveBeenCalled();
   });
 });

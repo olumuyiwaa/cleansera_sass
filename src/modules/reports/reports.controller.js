@@ -1,5 +1,6 @@
 const service = require('./reports.service');
 const { success } = require('../../utils/response');
+const { toCsv } = require('../../utils/csv');
 
 async function list(req, res, next) {
   try {
@@ -66,4 +67,29 @@ async function orgSummary(req, res, next) {
   }
 }
 
-module.exports = { list, kpis, revenue, cleanerPerf, auditTrail, orgSummary };
+// "Advanced reports & exports" — a Pro-tier feature per the pricing page.
+// Reuses the same service functions as the JSON endpoints above; only the
+// response format differs.
+async function revenueExport(req, res, next) {
+  try {
+    const data = await service.revenueByDay(req.businessId, { from: req.query.from, to: req.query.to });
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="revenue.csv"');
+    return res.status(200).send(toCsv(data));
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function cleanerPerfExport(req, res, next) {
+  try {
+    const data = await service.cleanerPerformance(req.businessId, { from: req.query.from, to: req.query.to });
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="cleaner-performance.csv"');
+    return res.status(200).send(toCsv(data));
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { list, kpis, revenue, cleanerPerf, auditTrail, orgSummary, revenueExport, cleanerPerfExport };

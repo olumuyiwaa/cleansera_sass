@@ -172,9 +172,9 @@ async function seed() {
   // 4. SUBSCRIPTION PLANS + BUSINESS SUBSCRIPTION
   // ─────────────────────────────────────────────
   const plans = [
-    { name: 'Starter', stripePriceId: 'price_starter_seed', maxCleaners: 3, monthlyPriceCents: 1500000, features: { sms: false, widget: true } },
-    { name: 'Growth', stripePriceId: 'price_growth_seed', maxCleaners: 15, monthlyPriceCents: 3500000, features: { sms: true, widget: true } },
-    { name: 'Pro', stripePriceId: 'price_pro_seed', maxCleaners: null, monthlyPriceCents: 7500000, features: { sms: true, widget: true, prioritySupport: true } },
+    { name: 'Starter', stripePriceId: 'price_starter_seed', maxCleaners: 5, monthlyPriceCents: 4900, features: { sms: true, widget: true, autoDispatch: false, customDomain: false, reportExports: false } },
+    { name: 'Growth', stripePriceId: 'price_growth_seed', maxCleaners: 20, monthlyPriceCents: 9900, features: { sms: true, widget: true, autoDispatch: true, customDomain: false, reportExports: false, prioritySupport: true } },
+    { name: 'Pro', stripePriceId: 'price_pro_seed', maxCleaners: null, monthlyPriceCents: 19900, features: { sms: true, widget: true, autoDispatch: true, customDomain: true, reportExports: true, prioritySupport: true } },
   ];
 
   const createdPlans = [];
