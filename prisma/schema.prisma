@@ -149,6 +149,13 @@ model Business {
   chemicalTrainingAcks ChemicalTrainingAck[]
   complianceAudits     ComplianceAudit[]
 
+  // Payroll — commission/rate config per cleaner, the earnings each
+  // completed job generates against that config, and the payout batches
+  // a business uses to mark those earnings as actually paid out.
+  cleanerCompensations CleanerCompensation[]
+  cleanerEarnings      CleanerEarning[]
+  payouts              Payout[]
+
   @@index([subdomain])
   @@index([parentBusinessId])
 }
@@ -274,15 +281,19 @@ enum BusinessMemberRole {
 }
 
 model BusinessMember {
-  id         String             @id @default(cuid())
-  businessId String
-  business   Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  userId     String
-  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role       BusinessMemberRole
-  isActive   Boolean            @default(true)
-  invitedAt  DateTime           @default(now())
-  joinedAt   DateTime?
+  id              String             @id @default(cuid())
+  businessId      String
+  business        Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role            BusinessMemberRole
+  isActive        Boolean            @default(true)
+  // Who sent the invite, for the team list / audit trail. Null for the
+  // owner row created at signup (registerBusiness) — nobody invited them.
+  invitedByUserId String?
+  invitedAt       DateTime           @default(now())
+  joinedAt        DateTime?
+  removedAt       DateTime?
 
   @@unique([businessId, userId])
   @@index([businessId])
@@ -375,6 +386,12 @@ model CleanerProfile {
   deviceTokens CleanerDeviceToken[]
   trainingAcks ChemicalTrainingAck[]
 
+  // Payroll — how this cleaner is paid, what each completed job has earned
+  // them against that rate, and the payout batches settling those earnings.
+  compensation CleanerCompensation?
+  earnings     CleanerEarning[]
+  payouts      Payout[]
+
   // One profile per person per business — not per person globally. A
   // cleaner offboarded by Business A can be onboarded fresh by Business B
   // (or re-onboarded by A) without an email collision.
@@ -382,6 +399,101 @@ model CleanerProfile {
   @@index([businessId])
   @@index([businessId, status])
   @@index([userId])
+}
+
+// ============================================================
+// PAYROLL — real cleaner earnings & payouts, replacing the client-side
+// "informational only" estimate the cleaner app used to compute.
+// ============================================================
+
+enum CompensationType {
+  PERCENT // value = percent (0-100) of the job's quotedPriceCents
+  FLAT_PER_JOB // value = cents, regardless of job price
+  HOURLY // value = cents per hour, applied to actual clocked duration
+}
+
+// A business sets one compensation rule per cleaner. Optional — a cleaner
+// with no row here simply doesn't accrue earnings yet (nothing computes a
+// number nobody configured).
+model CleanerCompensation {
+  id         String           @id @default(cuid())
+  businessId String
+  business   Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  cleanerId  String           @unique
+  cleaner    CleanerProfile   @relation(fields: [cleanerId], references: [id], onDelete: Cascade)
+  type       CompensationType @default(PERCENT)
+  value      Int
+  updatedAt  DateTime         @updatedAt
+  createdAt  DateTime         @default(now())
+
+  @@index([businessId])
+}
+
+enum EarningStatus {
+  PENDING // completed, not yet included in a payout
+  IN_PAYOUT // included in a Payout that hasn't been marked paid yet
+  PAID // the containing Payout has been marked paid
+  VOIDED // the underlying booking was disputed/refunded after the fact
+}
+
+// One row per (booking, cleaner) pair a cleaner earns against — not per
+// booking, since a job can have more than one assigned cleaner and each of
+// them earns their own share. Snapshots the compensation rule that produced
+// amountCents at the time the job was completed, so a later change to
+// CleanerCompensation never silently reprices earnings that already exist.
+model CleanerEarning {
+  id                String           @id @default(cuid())
+  businessId        String
+  business          Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  cleanerId         String
+  cleaner           CleanerProfile   @relation(fields: [cleanerId], references: [id], onDelete: Cascade)
+  bookingId         String
+  booking           Booking          @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  amountCents       Int
+  compensationType  CompensationType
+  compensationValue Int
+  status            EarningStatus    @default(PENDING)
+  payoutId          String?
+  payout            Payout?          @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  earnedAt          DateTime         @default(now())
+
+  @@unique([bookingId, cleanerId])
+  @@index([businessId])
+  @@index([cleanerId])
+  @@index([cleanerId, status])
+}
+
+enum PayoutStatus {
+  PENDING
+  PAID
+  CANCELED
+}
+
+// A batch of a single cleaner's PENDING earnings over a period, created by
+// the business and then marked PAID once they've actually sent the money
+// (bank transfer, cash, their own payroll run — CleanSera doesn't move
+// cleaner payroll funds itself, only tracks what's owed and what's settled).
+model Payout {
+  id          String         @id @default(cuid())
+  businessId  String
+  business    Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  cleanerId   String
+  cleaner     CleanerProfile @relation(fields: [cleanerId], references: [id], onDelete: Cascade)
+  periodStart DateTime
+  periodEnd   DateTime
+  totalCents  Int
+  status      PayoutStatus   @default(PENDING)
+  method      String? // MANUAL_CASH | MANUAL_TRANSFER | OTHER
+  reference   String?
+  paidAt      DateTime?
+  createdBy   String?
+  createdAt   DateTime       @default(now())
+
+  earnings CleanerEarning[]
+
+  @@index([businessId])
+  @@index([cleanerId])
+  @@index([businessId, status])
 }
 
 // FCM registration token for the cleaner mobile app, so the backend can push
@@ -635,6 +747,7 @@ model Booking {
   photos          JobPhoto[]
   review          Review?
   inventoryUsages JobInventoryUsage[]
+  cleanerEarnings CleanerEarning[]
 
   // Prevents the recurring daemon from double-creating a booking for the
   // same schedule + slot if it runs twice (two replicas, a retried tick,

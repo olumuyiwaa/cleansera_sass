@@ -1,5 +1,15 @@
 const service = require('./cleanerSelf.service');
+const payrollService = require('../payroll/payroll.service');
 const { success } = require('../../utils/response');
+
+async function getEarnings(req, res, next) {
+  try {
+    const summary = await payrollService.getEarningsSummaryByCleanerId(req.cleaner.id);
+    return success(res, 200, summary);
+  } catch (err) {
+    next(err);
+  }
+}
 
 async function getProfile(req, res, next) {
   try {
@@ -112,4 +122,5 @@ module.exports = {
   documentDownloadUrl,
   registerDeviceToken,
   unregisterDeviceToken,
+  getEarnings,
 };

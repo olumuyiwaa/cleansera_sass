@@ -11,6 +11,10 @@ router.use('/super-admin', require('../modules/superAdmin/superAdmin.routes'));
 // Business dashboard (authenticated, tenant-scoped)
 router.use('/businesses', require('../modules/businesses/businesses.routes'));
 router.use('/businesses/pricing', require('../modules/pricing/pricing.routes'));
+// Team/staff (BusinessMember) invite + role + removal — kept separate from
+// /businesses since it's a distinct owner-only resource, same reasoning as
+// /businesses/pricing living apart from the general businesses.routes.
+router.use('/businesses/staff', require('../modules/staff/staff.routes'));
 router.use('/subscriptions', require('../modules/subscriptions/subscriptions.routes'));
 // Cleaner self-service (own profile/availability/documents) — registered
 // before the admin /cleaners router so /cleaners/me/* is handled here first;
@@ -47,5 +51,6 @@ router.use('/support', require('../modules/supportContact/supportContact.routes'
 router.use('/calendar', require('../modules/calendar/calendar.routes'));
 router.use('/inventory', require('../modules/inventory/inventory.routes'));
 router.use('/compliance', require('../modules/compliance/compliance.routes'));
+router.use('/payroll', require('../modules/payroll/payroll.routes'));
 
 module.exports = router;

@@ -5,6 +5,7 @@ const logger = require('../../config/logger');
 const { createBookingCheckoutSession, createAncillaryCheckoutSession, createRefund } = require('../../lib/stripeClient');
 const { computeInitialRunDate } = require('../../utils/timezone');
 const { evaluateCancellation } = require('../../lib/cancellationPolicy');
+const payroll = require('../payroll/payroll.service');
 
 async function listBookings(businessId, { status } = {}, requester = null) {
   const cleanerScope =
@@ -312,6 +313,16 @@ async function completeBooking(businessId, bookingId, actorUserId, options = {})
     } catch (e) {
       // non-fatal
     }
+  }
+
+  // Credit assigned cleaner(s) their earnings for this job, per whatever
+  // compensation rule the business has set for each of them (if any).
+  // Never fails the completion — a payroll snag shouldn't block the job
+  // from being marked done.
+  try {
+    await payroll.computeEarningsForBooking(businessId, bookingId);
+  } catch (e) {
+    logger.error('Failed to compute cleaner earnings', { bookingId, error: e.message });
   }
 
   return updated;
@@ -649,6 +660,14 @@ async function completeBookingWithReview(businessId, bookingId, actorUserId) {
     data: { status: 'COMPLETED' },
   });
   await audit({ businessId, actorUserId, action: 'BOOKING_COMPLETED', entityType: 'Booking', entityId: bookingId });
+
+  // Credit assigned cleaner(s) their earnings for this job. Non-fatal —
+  // see completeBooking's identical hook above for why.
+  try {
+    await payroll.computeEarningsForBooking(businessId, bookingId);
+  } catch (e) {
+    logger.error('Failed to compute cleaner earnings', { bookingId, error: e.message });
+  }
 
   // Review request (existing)
   try {

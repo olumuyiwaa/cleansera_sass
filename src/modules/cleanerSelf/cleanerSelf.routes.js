@@ -30,6 +30,8 @@
  *   GET  /cleaners/me/documents/:id/download-url
  *   POST   /cleaners/me/device-token          { token, platform? }
  *   DELETE /cleaners/me/device-token          { token }
+ *   GET  /cleaners/me/earnings                real payroll figures (see payroll module) — replaces the
+ *                                              client-side estimate the Flutter app used to compute
  */
 
 const express = require('express');
@@ -87,5 +89,7 @@ router.post(
   controller.registerDeviceToken
 );
 router.delete('/me/device-token', [body('token').notEmpty()], validate, controller.unregisterDeviceToken);
+
+router.get('/me/earnings', controller.getEarnings);
 
 module.exports = router;
