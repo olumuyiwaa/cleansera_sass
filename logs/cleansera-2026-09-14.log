@@ -1,0 +1,42 @@
+{"businessId":"cmtxlbuvs00028hvfe8cj96la","level":"error","message":"You did not provide an API key. You need to provide your API key in the Authorization header, using Bearer auth (e.g. 'Authorization: Bearer YOUR_SECRET_KEY'). See https://stripe.com/docs/api#authentication for details, or we can help at https://support.stripe.com/.","path":"/api/v1/businesses/stripe-connect/onboard","stack":"Error: You did not provide an API key. You need to provide your API key in the Authorization header, using Bearer auth (e.g. 'Authorization: Bearer YOUR_SECRET_KEY'). See https://stripe.com/docs/api#authentication for details, or we can help at https://support.stripe.com/.\n    at res.toJSON.then.Error_js_1.StripeAPIError.message (/Users/emmanuel.oladoyin/StudioProjects/cleansera_new/cleansera-api/node_modules/stripe/cjs/RequestSender.js:96:31)\n    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)","timestamp":"2026-09-14T06:44:17.300Z"}
+{"level":"debug","message":"socket disconnected: m3_MMUh6x6Xl7QtUAAAD","timestamp":"2026-09-14T06:45:07.504Z"}
+{"level":"debug","message":"socket disconnected: uWd_TBDESfaoRSm_AAAE","timestamp":"2026-09-14T06:45:52.722Z"}
+{"level":"debug","message":"socket disconnected: WenQzaonG8LWaLVTAAAF","timestamp":"2026-09-14T06:46:01.802Z"}
+{"level":"debug","message":"socket disconnected: XoMGeKtOfB5NI29qAAAG","timestamp":"2026-09-14T06:46:39.479Z"}
+{"level":"debug","message":"socket disconnected: jrAEzrevdqXUlfn9AAAH","timestamp":"2026-09-14T06:48:00.683Z"}
+{"level":"debug","message":"socket disconnected: ipyHiD26MB9zkDgwAAAI","timestamp":"2026-09-14T07:30:16.395Z"}
+{"level":"debug","message":"socket disconnected: om8812C192UtBKprAAAL","timestamp":"2026-09-14T07:41:42.491Z"}
+{"level":"debug","message":"socket disconnected: 6xJ5QP4D4fwSCGS1AAAK","timestamp":"2026-09-14T07:42:19.072Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T10:26:04.669Z"}
+{"level":"debug","message":"socket disconnected: cwIL2e0QsRhLGmjCAAAC","timestamp":"2026-09-14T10:29:26.952Z"}
+{"level":"debug","message":"socket disconnected: Kq3gh4GgrOKKvdp3AAAD","timestamp":"2026-09-14T10:38:17.887Z"}
+{"level":"debug","message":"socket disconnected: gpgJV22zZyR7gDwPAAAE","timestamp":"2026-09-14T10:38:18.536Z"}
+{"level":"debug","message":"socket disconnected: WjkdRpfREFNE6v5jAAAF","timestamp":"2026-09-14T10:38:29.870Z"}
+{"level":"debug","message":"socket disconnected: DtJwgXizKwTp-5swAAAG","timestamp":"2026-09-14T10:45:24.403Z"}
+{"level":"debug","message":"socket disconnected: 1L3X6PNIrOUWqCFXAAAH","timestamp":"2026-09-14T10:45:55.565Z"}
+{"level":"debug","message":"socket disconnected: HIXs9udyt5DUt437AAAI","timestamp":"2026-09-14T10:50:39.518Z"}
+{"level":"debug","message":"socket disconnected: U6nZWeuUdyTlQaviAAAJ","timestamp":"2026-09-14T10:55:20.124Z"}
+{"level":"debug","message":"socket disconnected: 7uVOQHG9AjU3Gzk6AAAK","timestamp":"2026-09-14T10:55:49.053Z"}
+{"level":"debug","message":"socket disconnected: CANQkM2VoMzldSSVAAAL","timestamp":"2026-09-14T10:59:15.630Z"}
+{"level":"debug","message":"socket disconnected: jEybvUMW7RVB0guOAAAM","timestamp":"2026-09-14T10:59:56.559Z"}
+{"email":"test@test.com","level":"info","message":"support_contact","name":"test","reference":"CS-MU1605JK","timestamp":"2026-09-14T11:33:51.249Z"}
+{"level":"debug","message":"socket disconnected: X297x_bBoiBXX3ypAAAN","timestamp":"2026-09-14T11:35:54.046Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T12:18:06.127Z"}
+{"level":"debug","message":"socket disconnected: aQtD_m5Km1KOnQzMAAAB","timestamp":"2026-09-14T12:21:12.831Z"}
+{"email":"oladoyinemmanuel@gmail.com","level":"info","message":"support_contact","name":"oladoyin emmanuel","reference":"CS-MU17Q3D2","timestamp":"2026-09-14T12:22:01.095Z"}
+{"level":"debug","message":"socket disconnected: ybEGuGFXZqYxqteRAAAC","timestamp":"2026-09-14T12:23:05.030Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T13:05:57.231Z"}
+{"level":"error","message":"Refresh token invalid or expired","path":"/api/v1/auth/refresh","stack":"Error: Refresh token invalid or expired\n    at Object.refresh (/Users/emmanuel.oladoyin/StudioProjects/cleansera_new/cleansera-api/src/modules/auth/auth.service.js:237:17)\n    at async refresh (/Users/emmanuel.oladoyin/StudioProjects/cleansera_new/cleansera-api/src/modules/auth/auth.controller.js:60:20)","timestamp":"2026-09-14T13:12:05.748Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T14:20:51.408Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T14:20:57.156Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T14:21:02.833Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T14:21:07.697Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T14:21:58.125Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T14:22:03.791Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T14:22:09.690Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T14:22:16.381Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T14:22:31.478Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T14:23:35.847Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-14T14:24:06.207Z"}
+{"level":"debug","message":"socket disconnected: 6zOeTPT8loNUOTzlAAAA","timestamp":"2026-09-14T14:44:29.344Z"}
+{"bookingId":"bk1","error":"stripe is down","level":"error","message":"cancellation refund failed","timestamp":"2026-09-14T15:09:16.889Z"}
