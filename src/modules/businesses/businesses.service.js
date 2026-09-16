@@ -1,4 +1,7 @@
 const prisma = require('../../config/database');
+const { getPublicUrl, getPublicUploadUrl } = require('../../config/storage');
+const { toPublicBranding } = require('../../lib/branding');
+const crypto = require('crypto');
 
 // ============================================================
 // FRANCHISE / MULTI-LOCATION
@@ -112,8 +115,128 @@ async function updateBusiness(businessId, patch) {
   return updated;
 }
 
+// Resolves stored S3 keys into permanent public URLs for anything the
+// dashboard or public site actually renders as an <img> — see
+// lib/branding.js (shared with widget.service, which needs the same
+// resolution for the public storefront).
+
 async function getBranding(businessId) {
-  return prisma.businessBranding.findUnique({ where: { businessId } });
+  const branding = await prisma.businessBranding.findUnique({ where: { businessId } });
+  return toPublicBranding(branding);
+}
+
+const THEME_STYLES = ['MODERN', 'CLASSIC', 'BOLD'];
+const SOCIAL_PLATFORMS = ['facebook', 'instagram', 'tiktok', 'linkedin', 'twitter'];
+const SECTION_KEYS = ['about', 'testimonials', 'gallery', 'faq'];
+// Presigned uploads write straight to Spaces from the browser, so nothing
+// stops a client from requesting a URL for any key it likes — namespacing
+// every key under businesses/<businessId>/branding/ at least keeps one
+// business's uploads from being able to collide with or overwrite
+// another's by guessing a key, even though the presign itself doesn't
+// check who's asking for what path beyond that prefix.
+function brandingAssetKey(businessId, kind, filename) {
+  const ext = (filename || '').split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+  return `businesses/${businessId}/branding/${kind}-${crypto.randomUUID()}.${ext}`;
+}
+
+function isHttpUrl(value) {
+  try {
+    const u = new URL(value);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function validateBrandingPayload(payload) {
+  if (payload.themeStyle !== undefined && !THEME_STYLES.includes(payload.themeStyle)) {
+    const err = new Error(`themeStyle must be one of ${THEME_STYLES.join(', ')}`);
+    err.status = 422;
+    throw err;
+  }
+  if (payload.testimonials !== undefined && payload.testimonials !== null) {
+    if (!Array.isArray(payload.testimonials) || payload.testimonials.some((t) => typeof t?.name !== 'string' || typeof t?.quote !== 'string')) {
+      const err = new Error('testimonials must be an array of { name, quote }');
+      err.status = 422;
+      throw err;
+    }
+  }
+  if (payload.faqItems !== undefined && payload.faqItems !== null) {
+    if (!Array.isArray(payload.faqItems) || payload.faqItems.some((f) => typeof f?.question !== 'string' || typeof f?.answer !== 'string')) {
+      const err = new Error('faqItems must be an array of { question, answer }');
+      err.status = 422;
+      throw err;
+    }
+  }
+  if (payload.socialLinks !== undefined && payload.socialLinks !== null) {
+    if (typeof payload.socialLinks !== 'object' || Array.isArray(payload.socialLinks)) {
+      const err = new Error('socialLinks must be an object');
+      err.status = 422;
+      throw err;
+    }
+    for (const [key, value] of Object.entries(payload.socialLinks)) {
+      if (!SOCIAL_PLATFORMS.includes(key)) {
+        const err = new Error(`socialLinks.${key} is not a supported platform`);
+        err.status = 422;
+        throw err;
+      }
+      if (value && !isHttpUrl(value)) {
+        const err = new Error(`socialLinks.${key} must be a valid URL`);
+        err.status = 422;
+        throw err;
+      }
+    }
+  }
+  if (payload.sectionsEnabled !== undefined && payload.sectionsEnabled !== null) {
+    const se = payload.sectionsEnabled;
+    if (typeof se !== 'object' || Array.isArray(se)) {
+      const err = new Error('sectionsEnabled must be an object');
+      err.status = 422;
+      throw err;
+    }
+    for (const key of Object.keys(se)) {
+      if (key !== 'order' && !SECTION_KEYS.includes(key)) {
+        const err = new Error(`sectionsEnabled.${key} is not a recognized section`);
+        err.status = 422;
+        throw err;
+      }
+    }
+    if (se.order !== undefined) {
+      if (!Array.isArray(se.order) || se.order.some((k) => !SECTION_KEYS.includes(k))) {
+        const err = new Error(`sectionsEnabled.order must only contain ${SECTION_KEYS.join(', ')}`);
+        err.status = 422;
+        throw err;
+      }
+    }
+  }
+  if (payload.galleryImageKeys !== undefined && payload.galleryImageKeys !== null) {
+    if (!Array.isArray(payload.galleryImageKeys) || payload.galleryImageKeys.some((k) => typeof k !== 'string')) {
+      const err = new Error('galleryImageKeys must be an array of strings');
+      err.status = 422;
+      throw err;
+    }
+    if (payload.galleryImageKeys.length > 24) {
+      const err = new Error('galleryImageKeys cannot exceed 24 images');
+      err.status = 422;
+      throw err;
+    }
+  }
+}
+
+// A presigned upload URL for a public branding asset (logo, site hero
+// image, or one gallery photo) — mirrors the shape of the private-document
+// upload flow in cleanerSelf.service, but writes public-read so the
+// public site can reference the result by a permanent URL forever
+// instead of a signed one that expires.
+async function brandingUploadUrl(businessId, { kind, filename, contentType }) {
+  if (!['logo', 'hero', 'gallery'].includes(kind)) {
+    const err = new Error('kind must be one of logo, hero, gallery');
+    err.status = 422;
+    throw err;
+  }
+  const key = brandingAssetKey(businessId, kind, filename);
+  const uploadUrl = await getPublicUploadUrl(key, contentType || 'application/octet-stream');
+  return { key, uploadUrl, publicUrl: getPublicUrl(key) };
 }
 
 async function getStripeConnectStatus(businessId) {
@@ -173,12 +296,30 @@ async function refreshStripeConnectStatus(businessId) {
   });
 }
 
+// Previously passed req.body straight into `data` with no field
+// whitelist — a request could set `businessId` inside the payload itself
+// and, since that's a distinct field from the `where: { businessId }`
+// this runs against, silently relocate this branding row onto a
+// different business's FK. Explicit picking closes that off and doubles
+// as the only validation this endpoint ever had.
+const BRANDING_FIELDS = [
+  'logoKey', 'primaryColor', 'accentColor', 'tagline', 'widgetEmbedEnabled',
+  'themeStyle', 'heroImageKey', 'aboutTitle', 'aboutBody',
+  'testimonials', 'faqItems', 'galleryImageKeys', 'socialLinks', 'sectionsEnabled',
+];
+
 async function updateBranding(businessId, payload) {
-  const existing = await prisma.businessBranding.findUnique({ where: { businessId } });
-  if (existing) {
-    return prisma.businessBranding.update({ where: { businessId }, data: payload });
+  validateBrandingPayload(payload);
+  const data = {};
+  for (const field of BRANDING_FIELDS) {
+    if (payload[field] !== undefined) data[field] = payload[field];
   }
-  return prisma.businessBranding.create({ data: { businessId, ...payload } });
+
+  const existing = await prisma.businessBranding.findUnique({ where: { businessId } });
+  const saved = existing
+      ? await prisma.businessBranding.update({ where: { businessId }, data })
+      : await prisma.businessBranding.create({ data: { businessId, ...data } });
+  return toPublicBranding(saved);
 }
 
 async function addAddress(businessId, payload) {
@@ -292,6 +433,7 @@ module.exports = {
   updateBusiness,
   getBranding,
   updateBranding,
+  brandingUploadUrl,
   addAddress,
   updateAddress,
   removeAddress,

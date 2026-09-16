@@ -20,6 +20,7 @@ router.put('/', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.up
 
 router.get('/branding', controller.getBranding);
 router.put('/branding', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.updateBranding);
+router.post('/branding/upload-url', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.brandingUploadUrl);
 
 // Stripe Connect — onboarding a business to receive job-level customer
 // payments directly. Distinct from the platform's own subscription billing.

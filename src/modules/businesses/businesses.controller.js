@@ -63,6 +63,15 @@ async function updateBranding(req, res, next) {
   }
 }
 
+async function brandingUploadUrl(req, res, next) {
+  try {
+    const result = await service.brandingUploadUrl(req.businessId, req.body);
+    return success(res, 200, result);
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function addAddress(req, res, next) {
   try {
     const a = await service.addAddress(req.businessId, req.body);
@@ -172,4 +181,4 @@ async function getOnboardingStatus(req, res, next) {
   }
 }
 
-module.exports = { list, update, getBranding, updateBranding, addAddress, updateAddress, removeAddress, listServiceAreas, createServiceArea, updateServiceArea, deleteServiceArea, listHours, updateHours, getStripeConnectStatus, startStripeConnectOnboarding, refreshStripeConnectStatus, listLocations, createLocation, getOnboardingStatus };
+module.exports = { list, update, getBranding, updateBranding, brandingUploadUrl, addAddress, updateAddress, removeAddress, listServiceAreas, createServiceArea, updateServiceArea, deleteServiceArea, listHours, updateHours, getStripeConnectStatus, startStripeConnectOnboarding, refreshStripeConnectStatus, listLocations, createLocation, getOnboardingStatus };

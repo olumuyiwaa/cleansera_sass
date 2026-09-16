@@ -1,6 +1,7 @@
 const prisma = require('../../config/database');
 const { isWithinServiceAreas } = require('../../utils/geo');
 const { createAncillaryCheckoutSession } = require('../../lib/stripeClient');
+const { toPublicBranding } = require('../../lib/branding');
 
 /**
  * Creates the deposit Checkout Session for a freshly-created booking, when
@@ -48,6 +49,14 @@ async function getStorefront(businessId) {
     where: { id: businessId },
     include: { branding: true, hours: true },
   });
+  if (business?.branding) {
+    // This is the fix for a real bug: the frontend's widget/site pages
+    // have been reading business.branding.logoUrl (and now also expect
+    // heroImageUrl/galleryImageUrls) all along, but nothing here ever
+    // populated those fields — only the raw *Key columns came through, so
+    // no business's logo has actually rendered on their public site.
+    business.branding = toPublicBranding(business.branding);
+  }
   const services = await prisma.service.findMany({
     where: { businessId, isActive: true },
     include: { addOns: true },

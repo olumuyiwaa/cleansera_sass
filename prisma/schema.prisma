@@ -169,6 +169,40 @@ model BusinessBranding {
   accentColor        String?
   tagline            String?
   widgetEmbedEnabled Boolean  @default(true)
+
+  // ---- Public-site content depth (v1 "theme system") ----
+  // A style preset the site template renders differently (type scale,
+  // section framing) — not a full alternate layout, just enough variety
+  // that every business's site doesn't look identical once recolored.
+  // Validated in businesses.service against a small fixed set rather than
+  // an enum, so adding a new preset later never needs a migration.
+  themeStyle       String  @default("MODERN")
+  heroImageKey     String?
+  aboutTitle       String?
+  aboutBody        String?
+  // Each: { name, quote }. Kept as JSON rather than a child table —
+  // there's no need to query into a testimonial independently of its
+  // business, and a business editing "their testimonials" is naturally a
+  // single whole-list save from the settings UI.
+  testimonials     Json?
+  // Each: { question, answer } — reused as-is as FAQPage structured data
+  // on the public site, the same pattern the marketing site's own
+  // /pricing FAQ uses.
+  faqItems         Json?
+  galleryImageKeys String[] @default([])
+  // { facebook?, instagram?, tiktok?, linkedin?, twitter? } — all optional,
+  // validated as URLs in businesses.service.
+  socialLinks      Json?
+  // Which optional sections render on the public site, and in what order.
+  // Hero/Services/HowItWorks/CTA/Footer are structural and always render;
+  // this only controls the optional content sections. A section with no
+  // real content configured (e.g. testimonials: true but an empty
+  // testimonials list) is skipped at render time regardless of this flag,
+  // so toggling one on before filling it in can't publish an empty block.
+  // Shape: { about: bool, testimonials: bool, gallery: bool, faq: bool,
+  // order: string[] (subset/permutation of those four keys) }.
+  sectionsEnabled  Json?
+
   updatedAt          DateTime @updatedAt
 }
 
