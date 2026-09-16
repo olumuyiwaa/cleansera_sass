@@ -134,6 +134,7 @@ async function listEarnings(businessId, { cleanerId, status } = {}) {
   });
 }
 
+
 /**
  * A cleaner's own earnings summary — used by the cleaner app instead of the
  * old client-side estimate that never reflected a real payroll figure.
