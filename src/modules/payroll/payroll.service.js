@@ -129,7 +129,7 @@ async function computeEarningsForBooking(businessId, bookingId) {
 async function listEarnings(businessId, { cleanerId, status } = {}) {
   return prisma.cleanerEarning.findMany({
     where: { businessId, ...(cleanerId ? { cleanerId } : {}), ...(status ? { status } : {}) },
-    include: { booking: { select: { id: true, scheduledAt: true, quotedPriceCents: true } } },
+    include: { booking: { select: { id: true, scheduledStart: true,scheduledEnd: true, quotedPriceCents: true } } },
     orderBy: { earnedAt: 'desc' },
   });
 }
