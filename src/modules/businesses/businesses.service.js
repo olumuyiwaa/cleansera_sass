@@ -97,22 +97,32 @@ async function updateBusiness(businessId, patch) {
     if (Object.prototype.hasOwnProperty.call(patch, key)) data[key] = patch[key];
   }
 
-  // Custom domain is a Pro-tier feature per the pricing page. Only check it
-  // when the value is actually changing, so a business that already has one
-  // set (e.g. downgraded plans later) isn't broken by re-saving other
-  // unrelated settings on this same form.
-  if ('customDomain' in data && data.customDomain !== b.customDomain) {
-    const { hasPlanFeature } = require('../../lib/planFeatures');
-    const allowed = await hasPlanFeature(businessId, 'customDomain');
-    if (!allowed) {
-      const err = new Error("Custom domains aren't included in your current plan. Upgrade to Pro to use one.");
-      err.status = 402;
-      throw err;
+  // Normalize empty string → null so "" and null are the same "no domain"
+  if ('customDomain' in data) {
+    const normalized =
+        data.customDomain && String(data.customDomain).trim()
+            ? String(data.customDomain).trim().toLowerCase()
+            : null;
+    data.customDomain = normalized;
+
+    const current = b.customDomain || null;
+    if (normalized !== current) {
+      // Only gate when *setting* a domain, not when clearing it
+      if (normalized) {
+        const { hasPlanFeature } = require('../../lib/planFeatures');
+        const allowed = await hasPlanFeature(businessId, 'customDomain');
+        if (!allowed) {
+          const err = new Error(
+              "Custom domains aren't included in your current plan. Upgrade to Pro to use one."
+          );
+          err.status = 402;
+          throw err;
+        }
+      }
     }
   }
 
-  const updated = await prisma.business.update({ where: { id: businessId }, data });
-  return updated;
+  return prisma.business.update({ where: { id: businessId }, data });
 }
 
 // Resolves stored S3 keys into permanent public URLs for anything the

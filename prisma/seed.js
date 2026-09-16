@@ -193,7 +193,7 @@ async function seed() {
     subscription = await prisma.businessSubscription.create({
       data: {
         businessId: business.id,
-        planId: createdPlans[1].id, // Growth
+        planId: createdPlans[2].id,
         stripeCustomerId: 'cus_seed_example',
         stripeSubscriptionId: 'sub_seed_example',
         status: 'ACTIVE',
@@ -578,7 +578,7 @@ async function seed() {
           frequency: ['WEEKLY', 'BIWEEKLY', 'MONTHLY'][i],
           dayOfWeek: (i + 1) % 7,
           startTime: '10:00',
-          isActive: true,
+          status: "ACTIVE",
           nextRunDate: new Date(Date.now() + (i + 1) * 7 * 24 * 60 * 60 * 1000),
         },
       });
