@@ -18,6 +18,8 @@ router.put('/', requireRole('BUSINESS_OWNER','BUSINESS_MANAGER'), [
 		}
 		return false;
 	}),
+	body('perSqftCents').optional({ nullable: true }).isInt({ min: 0 }).withMessage('perSqftCents must be a non-negative integer (cents)'),
+	body('perRoomCents').optional({ nullable: true }).isInt({ min: 0 }).withMessage('perRoomCents must be a non-negative integer (cents)'),
 	body('depositType').optional({ nullable: true }).isIn(['PERCENT', 'AMOUNT']),
 	body('depositValue').optional({ nullable: true }).isInt({ min: 0 }),
 	body('cancellationWindowHours').optional({ nullable: true }).isInt({ min: 0 }),

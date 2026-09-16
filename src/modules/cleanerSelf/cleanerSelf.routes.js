@@ -32,6 +32,8 @@
  *   DELETE /cleaners/me/device-token          { token }
  *   GET  /cleaners/me/earnings                real payroll figures (see payroll module) — replaces the
  *                                              client-side estimate the Flutter app used to compute
+ *   GET  /cleaners/me/stripe/status           Stripe Connect onboarding/payouts status
+ *   POST /cleaners/me/stripe/onboarding-link  { refreshUrl?, returnUrl? } -> { url } to start/resume onboarding
  */
 
 const express = require('express');
@@ -91,5 +93,13 @@ router.post(
 router.delete('/me/device-token', [body('token').notEmpty()], validate, controller.unregisterDeviceToken);
 
 router.get('/me/earnings', controller.getEarnings);
+
+router.get('/me/stripe/status', controller.getStripeStatus);
+router.post(
+  '/me/stripe/onboarding-link',
+  [body('refreshUrl').optional().isURL(), body('returnUrl').optional().isURL()],
+  validate,
+  controller.getStripeOnboardingLink
+);
 
 module.exports = router;

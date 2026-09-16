@@ -2,6 +2,7 @@ const prisma = require('../../config/database');
 const { audit } = require('../../utils/audit');
 const { getSignedUploadUrl, getSignedDownloadUrl } = require('../../config/storage');
 const cleanersService = require('../cleaners/cleaners.service');
+const stripeClient = require('../../lib/stripeClient');
 
 // Document types a cleaner may submit about themselves. BACKGROUND_CHECK and
 // CONTRACT are issued by the business, not the cleaner, so those stay
@@ -137,6 +138,43 @@ async function getMyDocumentDownloadUrl(cleaner, id) {
   return { downloadUrl, document: doc };
 }
 
+/**
+ * Starts (or resumes) Stripe Connect Express onboarding for this cleaner.
+ * The account is created lazily on first call and cached on User — see the
+ * schema comment on User.stripeConnectedAccountId for why this lives at the
+ * user level rather than on the per-business CleanerProfile.
+ */
+async function getStripeOnboardingLink(cleaner, { refreshUrl, returnUrl } = {}) {
+  const user = await prisma.user.findUnique({ where: { id: cleaner.userId } });
+  const { url } = await stripeClient.createCleanerConnectAccountAndLink(user, { refreshUrl, returnUrl });
+  return { url };
+}
+
+/**
+ * Current Stripe Connect status for this cleaner, for the earnings screen
+ * to show "connect your payout account" vs. "payouts enabled". Also
+ * refreshes the cached User.stripePayoutsEnabled flag so payroll.service
+ * can gate the business's "Pay via Stripe" action without a Stripe call on
+ * every payout list.
+ */
+async function getStripeStatus(cleaner) {
+  const user = await prisma.user.findUnique({ where: { id: cleaner.userId } });
+  if (!user.stripeConnectedAccountId) {
+    return { connected: false, chargesEnabled: false, payoutsEnabled: false, detailsSubmitted: false };
+  }
+  const status = await stripeClient.getConnectAccountStatus(user.stripeConnectedAccountId);
+  if (status.payoutsEnabled !== user.stripePayoutsEnabled) {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        stripePayoutsEnabled: status.payoutsEnabled,
+        ...(status.payoutsEnabled && !user.stripeConnectOnboardedAt ? { stripeConnectOnboardedAt: new Date() } : {}),
+      },
+    });
+  }
+  return { connected: true, ...status };
+}
+
 module.exports = {
   SELF_SERVICE_DOC_TYPES,
   getMyProfile,
@@ -150,6 +188,8 @@ module.exports = {
   getMyDocumentDownloadUrl,
   registerDeviceToken,
   unregisterDeviceToken,
+  getStripeOnboardingLink,
+  getStripeStatus,
 };
 
 /**

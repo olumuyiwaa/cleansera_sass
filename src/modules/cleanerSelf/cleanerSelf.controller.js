@@ -110,6 +110,24 @@ async function unregisterDeviceToken(req, res, next) {
   }
 }
 
+async function getStripeOnboardingLink(req, res, next) {
+  try {
+    const result = await service.getStripeOnboardingLink(req.cleaner, req.body || {});
+    return success(res, 200, result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getStripeStatus(req, res, next) {
+  try {
+    const status = await service.getStripeStatus(req.cleaner);
+    return success(res, 200, status);
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   getProfile,
   updateProfile,
@@ -123,4 +141,6 @@ module.exports = {
   registerDeviceToken,
   unregisterDeviceToken,
   getEarnings,
+  getStripeOnboardingLink,
+  getStripeStatus,
 };

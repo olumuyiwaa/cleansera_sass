@@ -19,6 +19,8 @@ async function updatePricing(req, res, next) {
     // keys the caller actually sent.
     const fields = [
       'frequencyDiscounts',
+      'perSqftCents',
+      'perRoomCents',
       'depositType',
       'depositValue',
       'cancellationWindowHours',

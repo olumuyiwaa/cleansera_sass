@@ -64,4 +64,22 @@ async function markPayoutPaid(req, res, next) {
   }
 }
 
-module.exports = { listCompensations, setCompensation, listEarnings, myEarnings, listPayouts, createPayout, markPayoutPaid };
+async function payViaStripe(req, res, next) {
+  try {
+    const payout = await service.payViaStripe(req.businessId, req.user.id, req.params.id);
+    return success(res, 200, payout, 'Payout paid via Stripe');
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = {
+  listCompensations,
+  setCompensation,
+  listEarnings,
+  myEarnings,
+  listPayouts,
+  createPayout,
+  markPayoutPaid,
+  payViaStripe,
+};

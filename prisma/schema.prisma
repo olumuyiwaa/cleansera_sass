@@ -29,6 +29,17 @@ model User {
   twoFactorEnabled Boolean    @default(false)
   twoFactorSecret  String?
   avatarKey        String?
+
+  // Stripe Connect Express account for receiving cleaner payouts. Lives on
+  // User (not CleanerProfile) because it's a person-level identity: a
+  // cleaner who works for two businesses has two CleanerProfile rows (see
+  // the unique([businessId, userId]) note below) but should only ever have
+  // to complete Stripe onboarding once. Both businesses' Payouts pay out to
+  // the same connected account.
+  stripeConnectedAccountId String?  @unique
+  stripeConnectOnboardedAt DateTime?
+  stripePayoutsEnabled     Boolean  @default(false)
+
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 
@@ -260,6 +271,13 @@ model BusinessPricing {
   businessId         String   @unique
   business           Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
   frequencyDiscounts Json? // { WEEKLY: 0.1, BIWEEKLY: 0.05 }
+
+  // Per-business PER_SQFT / PER_ROOM pricing model rates. Null = fall back
+  // to the platform default in lib/pricing.js (today's hardcoded-for-everyone
+  // behavior). A business in a different market/cost structure sets these
+  // instead of being stuck on the same rate as every other tenant.
+  perSqftCents Int?
+  perRoomCents Int?
 
   // Deposit collected at booking time, before the job is scheduled/assigned.
   // null depositType = no deposit required (today's behavior).
@@ -504,9 +522,10 @@ enum PayoutStatus {
 }
 
 // A batch of a single cleaner's PENDING earnings over a period, created by
-// the business and then marked PAID once they've actually sent the money
-// (bank transfer, cash, their own payroll run — CleanSera doesn't move
-// cleaner payroll funds itself, only tracks what's owed and what's settled).
+// the business and then marked PAID either manually (bank transfer, cash,
+// their own payroll run) or, when the cleaner has completed Stripe Connect
+// onboarding, automatically via a Stripe transfer straight to the cleaner's
+// connected account — see payroll.service.payViaStripe.
 model Payout {
   id          String         @id @default(cuid())
   businessId  String
@@ -517,8 +536,13 @@ model Payout {
   periodEnd   DateTime
   totalCents  Int
   status      PayoutStatus   @default(PENDING)
-  method      String? // MANUAL_CASH | MANUAL_TRANSFER | OTHER
+  method      String? // MANUAL_CASH | MANUAL_TRANSFER | STRIPE | OTHER
   reference   String?
+  // Set only when method = STRIPE. The Stripe Transfer id moving funds from
+  // the business's own connected account balance to the cleaner's connected
+  // account — see stripeClient.payCleanerTransfer for why it's scoped that
+  // way rather than off the platform's balance.
+  stripeTransferId String?
   paidAt      DateTime?
   createdBy   String?
   createdAt   DateTime       @default(now())

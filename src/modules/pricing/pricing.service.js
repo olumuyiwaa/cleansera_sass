@@ -3,8 +3,9 @@ const prisma = require('../../config/database');
 async function getPricing(businessId) {
   let p = await prisma.businessPricing.findUnique({ where: { businessId } });
   if (!p) {
-    // return defaults shape
-    return { businessId, frequencyDiscounts: null };
+    // return defaults shape — perSqftCents/perRoomCents null here means
+    // "not set", which lib/pricing.js reads as "use the platform DEFAULTS"
+    return { businessId, frequencyDiscounts: null, perSqftCents: null, perRoomCents: null };
   }
   return p;
 }

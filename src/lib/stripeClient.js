@@ -100,6 +100,116 @@ async function getConnectAccountStatus(accountId) {
 }
 
 /**
+ * Creates a Stripe Connect Express account for a cleaner and returns an
+ * onboarding link. Mirrors createConnectAccountAndLink for businesses, with
+ * two differences: it's stored on User.stripeConnectedAccountId (a person-
+ * level identity — a cleaner working for two businesses shouldn't have to
+ * onboard twice, see the schema comment on User), and business_type is
+ * 'individual' rather than 'company' since a cleaner is onboarding as
+ * themselves, not as a registered business.
+ */
+async function createCleanerConnectAccountAndLink(user, { refreshUrl, returnUrl } = {}) {
+  let accountId = user.stripeConnectedAccountId;
+
+  if (!accountId) {
+    const account = await stripe.accounts.create({
+      type: 'express',
+      business_type: 'individual',
+      email: user.email,
+      individual: {
+        email: user.email,
+        first_name: user.firstName,
+        last_name: user.lastName,
+      },
+      metadata: { userId: user.id },
+    });
+    accountId = account.id;
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { stripeConnectedAccountId: accountId },
+    });
+  }
+
+  const link = await stripe.accountLinks.create({
+    account: accountId,
+    refresh_url: refreshUrl || `${process.env.APP_URL || 'http://localhost:3000'}/cleaner/earnings?stripe=refresh`,
+    return_url: returnUrl || `${process.env.APP_URL || 'http://localhost:3000'}/cleaner/earnings?stripe=return`,
+    type: 'account_onboarding',
+  });
+
+  return { accountId, url: link.url };
+}
+
+/**
+ * Pays out a cleaner by transferring funds from the *business's* Stripe
+ * Connect balance to the cleaner's own connected account.
+ *
+ * This is deliberately not a transfer from the platform's own balance.
+ * Job payments settle on the business's connected account (see
+ * createBookingCheckoutSession's transfer_data.destination) — CleanSera's
+ * platform account only ever holds the optional application fee, so it has
+ * no cleaner-payroll funds to move. Passing { stripeAccount:
+ * businessConnectedAccountId } makes Stripe create the Transfer as that
+ * connected account, moving money out of *its* balance to the cleaner's
+ * connected account — the same "platform-facilitated, connected-account-
+ * funded" pattern used for marketplaces paying sub-recipients.
+ *
+ * Throws a 402 if the business's connected balance can't cover it (Stripe's
+ * balance_insufficient), so the caller can surface "insufficient balance,
+ * try again once more job payments have settled" instead of a generic 500.
+ */
+async function payCleanerTransfer({
+  businessConnectedAccountId,
+  cleanerConnectedAccountId,
+  amountCents,
+  currency = 'usd',
+  payoutId,
+  description,
+}) {
+  if (!process.env.STRIPE_SECRET_KEY) {
+    const err = new Error('STRIPE_SECRET_KEY is not configured');
+    err.status = 503;
+    throw err;
+  }
+  if (!businessConnectedAccountId) {
+    const err = new Error('Business has not completed Stripe Connect onboarding');
+    err.status = 402;
+    throw err;
+  }
+  if (!cleanerConnectedAccountId) {
+    const err = new Error('Cleaner has not completed Stripe Connect onboarding');
+    err.status = 402;
+    throw err;
+  }
+  if (!amountCents || amountCents < 1) {
+    const err = new Error('Amount must be greater than 0');
+    err.status = 422;
+    throw err;
+  }
+
+  try {
+    const transfer = await stripe.transfers.create(
+      {
+        amount: amountCents,
+        currency: (currency || 'usd').toLowerCase(),
+        destination: cleanerConnectedAccountId,
+        description: description || `Cleaner payout ${payoutId || ''}`.trim(),
+        metadata: { payoutId: payoutId || '' },
+      },
+      { stripeAccount: businessConnectedAccountId }
+    );
+    return transfer;
+  } catch (err) {
+    if (err && err.code === 'balance_insufficient') {
+      const wrapped = new Error('Business Stripe balance is insufficient to cover this payout yet');
+      wrapped.status = 402;
+      throw wrapped;
+    }
+    throw err;
+  }
+}
+
+/**
  * Create a one-time Checkout Session for a booking, using Stripe Connect
  * destination charges: the customer's payment settles on the platform
  * account only in transit — funds are transferred to the business's
@@ -259,6 +369,8 @@ module.exports = {
   retrieveEvent,
   createConnectAccountAndLink,
   getConnectAccountStatus,
+  createCleanerConnectAccountAndLink,
+  payCleanerTransfer,
   createBookingCheckoutSession,
   createAncillaryCheckoutSession,
   createRefund,

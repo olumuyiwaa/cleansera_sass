@@ -1,6 +1,7 @@
 const prisma = require('../../config/database');
 const { audit } = require('../../utils/audit');
 const logger = require('../../config/logger');
+const stripeClient = require('../../lib/stripeClient');
 
 async function getCleanerOrThrow(businessId, cleanerId) {
   const cleaner = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId } });
@@ -258,9 +259,82 @@ async function markPayoutPaid(businessId, actorUserId, payoutId, { method, refer
 async function listPayouts(businessId, { cleanerId, status } = {}) {
   return prisma.payout.findMany({
     where: { businessId, ...(cleanerId ? { cleanerId } : {}), ...(status ? { status } : {}) },
-    include: { cleaner: { select: { id: true, userId: true, user: { select: { firstName: true, lastName: true } } } } },
+    include: {
+      cleaner: {
+        select: {
+          id: true,
+          userId: true,
+          // stripePayoutsEnabled is included so the dashboard can show/hide
+          // the "Pay via Stripe" action per payout without a second
+          // round-trip per row.
+          user: { select: { firstName: true, lastName: true, stripePayoutsEnabled: true } },
+        },
+      },
+    },
     orderBy: { createdAt: 'desc' },
   });
+}
+
+/**
+ * Pays a PENDING payout by transferring funds from the business's Stripe
+ * Connect balance straight to the cleaner's connected account — the
+ * automated counterpart to markPayoutPaid's manual "I already sent it
+ * myself" path. Requires both the business and the cleaner to have
+ * completed Stripe Connect onboarding; fails with a clear 402/422 rather
+ * than silently falling back to a manual record if either hasn't.
+ */
+async function payViaStripe(businessId, actorUserId, payoutId) {
+  const payout = await prisma.payout.findFirst({
+    where: { id: payoutId, businessId },
+    include: { cleaner: { include: { user: true } }, business: true },
+  });
+  if (!payout) {
+    const err = new Error('Payout not found for this business');
+    err.status = 404;
+    throw err;
+  }
+  if (payout.status === 'PAID') {
+    return payout; // idempotent — already settled, Stripe or otherwise
+  }
+  if (payout.status === 'CANCELED') {
+    const err = new Error('Cannot pay a canceled payout');
+    err.status = 422;
+    throw err;
+  }
+
+  const transfer = await stripeClient.payCleanerTransfer({
+    businessConnectedAccountId: payout.business.stripeConnectedAccountId,
+    cleanerConnectedAccountId: payout.cleaner.user.stripeConnectedAccountId,
+    amountCents: payout.totalCents,
+    currency: process.env.DEFAULT_CURRENCY || 'usd',
+    payoutId: payout.id,
+    description: `CleanSera payout ${payout.id} (${payout.cleaner.user.firstName} ${payout.cleaner.user.lastName})`,
+  });
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const p = await tx.payout.update({
+      where: { id: payoutId },
+      data: {
+        status: 'PAID',
+        paidAt: new Date(),
+        method: 'STRIPE',
+        stripeTransferId: transfer.id,
+      },
+    });
+    await tx.cleanerEarning.updateMany({ where: { payoutId }, data: { status: 'PAID' } });
+    return p;
+  });
+
+  await audit({
+    businessId,
+    actorUserId,
+    action: 'PAYOUT_PAID_VIA_STRIPE',
+    entityType: 'Payout',
+    entityId: payoutId,
+    metadata: { stripeTransferId: transfer.id, amountCents: payout.totalCents },
+  });
+
+  return updated;
 }
 
 module.exports = {
@@ -272,5 +346,6 @@ module.exports = {
   getEarningsSummaryByCleanerId,
   createPayout,
   markPayoutPaid,
+  payViaStripe,
   listPayouts,
 };

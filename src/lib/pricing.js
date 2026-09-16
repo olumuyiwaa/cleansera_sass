@@ -14,16 +14,20 @@ function sumAddOnData(service, selectedAddOnIds = []) {
   return { addOnTotal, extraMinutes };
 }
 
-function calculateBase(service, { sqft, rooms, bathrooms, customDurationMinutes } = {}) {
+// rates lets a caller override the platform-wide DEFAULTS with a specific
+// business's BusinessPricing.perSqftCents/perRoomCents (see calculateQuote).
+// Falls back to DEFAULTS when a business hasn't set its own rate, so this
+// stays backwards-compatible for any caller that doesn't pass rates at all.
+function calculateBase(service, { sqft, rooms, bathrooms, customDurationMinutes } = {}, rates = {}) {
   const model = service.pricingModel || 'FLAT';
   let base = service.basePriceCents || 0;
   let estimatedMinutes = service.estimatedMinutes || 60;
 
   if (model === 'PER_SQFT') {
-    const per = DEFAULTS.perSqftCents;
+    const per = rates.perSqftCents != null ? rates.perSqftCents : DEFAULTS.perSqftCents;
     base = Math.round((service.basePriceCents || 0) + (Number(sqft || 0) * per));
   } else if (model === 'PER_ROOM') {
-    const per = DEFAULTS.perRoomCents;
+    const per = rates.perRoomCents != null ? rates.perRoomCents : DEFAULTS.perRoomCents;
     base = Math.round((service.basePriceCents || 0) + (Number(rooms || 0) * per));
   } else if (model === 'HOURLY') {
     const hourly = service.basePriceCents || 0; // treat base as hourly rate
@@ -47,7 +51,28 @@ function applyFrequencyDiscount(priceCents, frequency) {
 async function calculateQuote(service, payload = {}) {
   const { businessId, addOnIds = [], frequency, couponCode } = payload;
   let couponInfo;
-  const { base, estimatedMinutes: baseMinutes } = calculateBase(service, payload);
+
+  // Single BusinessPricing lookup, reused below for both the PER_SQFT/
+  // PER_ROOM rate override and the frequency-discount override. Previously
+  // this row was fetched a second time further down just for
+  // frequencyDiscounts; folding it into one fetch here also means
+  // calculateBase (which used to only ever see the hardcoded platform
+  // DEFAULTS) now gets the business's own rate.
+  let bp = null;
+  if (businessId) {
+    try {
+      bp = await prisma.businessPricing.findUnique({ where: { businessId } });
+    } catch (e) {
+      // ignore DB errors and fall back to defaults below
+    }
+  }
+
+  const rates = {
+    perSqftCents: bp && bp.perSqftCents != null ? bp.perSqftCents : undefined,
+    perRoomCents: bp && bp.perRoomCents != null ? bp.perRoomCents : undefined,
+  };
+
+  const { base, estimatedMinutes: baseMinutes } = calculateBase(service, payload, rates);
   const { addOnTotal, extraMinutes } = sumAddOnData(service, addOnIds);
 
   const estimatedMinutes = baseMinutes + extraMinutes;
@@ -56,15 +81,12 @@ async function calculateQuote(service, payload = {}) {
 
   // apply business-configured frequency discounts when available
   let freqDisc = DEFAULTS.frequencyDiscounts;
-  if (businessId) {
+  if (bp && bp.frequencyDiscounts) {
     try {
-      const bp = await prisma.businessPricing.findUnique({ where: { businessId } });
-      if (bp && bp.frequencyDiscounts) {
-        const parsed = typeof bp.frequencyDiscounts === 'string' ? JSON.parse(bp.frequencyDiscounts) : bp.frequencyDiscounts;
-        freqDisc = Object.assign({}, DEFAULTS.frequencyDiscounts, parsed || {});
-      }
+      const parsed = typeof bp.frequencyDiscounts === 'string' ? JSON.parse(bp.frequencyDiscounts) : bp.frequencyDiscounts;
+      freqDisc = Object.assign({}, DEFAULTS.frequencyDiscounts, parsed || {});
     } catch (e) {
-      // ignore DB errors and fallback to defaults
+      // malformed JSON on the row — fall back to defaults rather than throw
     }
   }
 

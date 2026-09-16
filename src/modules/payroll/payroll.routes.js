@@ -32,5 +32,10 @@ router.post(
   validate,
   controller.markPayoutPaid
 );
+// Automated counterpart to mark-paid: actually moves money, via Stripe
+// Connect, from the business's balance to the cleaner's connected account.
+// Requires both sides to have completed Connect onboarding — see
+// payroll.service.payViaStripe for the exact failure modes.
+router.post('/payouts/:id/pay-stripe', controller.payViaStripe);
 
 module.exports = router;
