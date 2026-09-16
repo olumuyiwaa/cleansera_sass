@@ -1,7 +1,7 @@
 'use strict';
 
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+// See inventory.service.js's identical comment -- same fix, same reason.
+const prisma = require('../../config/database');
 
 class ComplianceService {
   // ─── Documents (SDS etc.) ────────────────────────────────

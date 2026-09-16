@@ -1,6 +1,7 @@
 'use strict';
 
 const inventoryService = require('./inventory.service');
+const { success, error } = require('../../utils/response');
 const {
   createItemSchema,
   updateItemSchema,
@@ -10,9 +11,12 @@ const {
   jobUsageSchema,
 } = require('./inventory.validation');
 
+// req.businessId is set by scopeToBusiness (see inventory.routes.js) once
+// it has verified the caller actually belongs to that business — this
+// used to read req.business?.id / req.user?.businessId, neither of which
+// anything set, so it always resolved to undefined.
 function getBusinessId(req) {
-  // Assumes your existing middleware attaches the resolved tenant
-  return req.business?.id || req.user?.businessId;
+  return req.businessId;
 }
 
 async function listItems(req, res, next) {
@@ -25,7 +29,7 @@ async function listItems(req, res, next) {
       page: Number(req.query.page) || 1,
       limit: Math.min(Number(req.query.limit) || 50, 100),
     });
-    res.json(result);
+    return success(res, 200, result);
   } catch (err) {
     next(err);
   }
@@ -35,8 +39,8 @@ async function getItem(req, res, next) {
   try {
     const businessId = getBusinessId(req);
     const item = await inventoryService.getItem(businessId, req.params.id);
-    if (!item) return res.status(404).json({ error: 'Item not found' });
-    res.json(item);
+    if (!item) return error(res, 404, 'Item not found');
+    return success(res, 200, item);
   } catch (err) {
     next(err);
   }
@@ -47,7 +51,7 @@ async function createItem(req, res, next) {
     const businessId = getBusinessId(req);
     const data = createItemSchema.parse(req.body);
     const item = await inventoryService.createItem(businessId, data);
-    res.status(201).json(item);
+    return success(res, 201, item);
   } catch (err) {
     next(err);
   }
@@ -58,7 +62,7 @@ async function updateItem(req, res, next) {
     const businessId = getBusinessId(req);
     const data = updateItemSchema.parse(req.body);
     const item = await inventoryService.updateItem(businessId, req.params.id, data);
-    res.json(item);
+    return success(res, 200, item);
   } catch (err) {
     next(err);
   }
@@ -68,7 +72,7 @@ async function listLocations(req, res, next) {
   try {
     const businessId = getBusinessId(req);
     const locations = await inventoryService.listLocations(businessId);
-    res.json(locations);
+    return success(res, 200, locations);
   } catch (err) {
     next(err);
   }
@@ -79,7 +83,7 @@ async function createLocation(req, res, next) {
     const businessId = getBusinessId(req);
     const data = createLocationSchema.parse(req.body);
     const location = await inventoryService.createLocation(businessId, data);
-    res.status(201).json(location);
+    return success(res, 201, location);
   } catch (err) {
     next(err);
   }
@@ -90,7 +94,7 @@ async function updateLocation(req, res, next) {
     const businessId = getBusinessId(req);
     const data = updateLocationSchema.parse(req.body);
     const location = await inventoryService.updateLocation(businessId, req.params.id, data);
-    res.json(location);
+    return success(res, 200, location);
   } catch (err) {
     next(err);
   }
@@ -103,7 +107,7 @@ async function getStock(req, res, next) {
       locationId: req.query.locationId,
       lowStockOnly: req.query.lowStock === 'true',
     });
-    res.json(stock);
+    return success(res, 200, stock);
   } catch (err) {
     next(err);
   }
@@ -118,7 +122,7 @@ async function createMovement(req, res, next) {
       data,
       req.user?.id
     );
-    res.status(201).json(movement);
+    return success(res, 201, movement);
   } catch (err) {
     next(err);
   }
@@ -134,7 +138,7 @@ async function recordJobUsage(req, res, next) {
       data,
       req.user?.id
     );
-    res.status(201).json(usage);
+    return success(res, 201, usage);
   } catch (err) {
     next(err);
   }

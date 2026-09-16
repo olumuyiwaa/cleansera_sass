@@ -1,7 +1,12 @@
 'use strict';
 
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+// Was: const { PrismaClient } = require('@prisma/client'); const prisma = new PrismaClient();
+// That created a second, independent PrismaClient (and connection pool)
+// alongside the shared one every other module uses -- fine at low volume,
+// but each instantiation opens its own pool against Postgres, and enough
+// of them across modules risks exhausting the database's connection
+// limit under load. Use the shared singleton like everything else does.
+const prisma = require('../../config/database');
 
 class InventoryService {
   // ─── Items ───────────────────────────────────────────────

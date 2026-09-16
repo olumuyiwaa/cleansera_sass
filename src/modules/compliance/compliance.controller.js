@@ -1,6 +1,7 @@
 'use strict';
 
 const complianceService = require('./compliance.service');
+const { success, error } = require('../../utils/response');
 const {
   createDocumentSchema,
   updateDocumentSchema,
@@ -9,8 +10,11 @@ const {
   updateAuditSchema,
 } = require('./compliance.validation');
 
+// See inventory.controller.js's identical comment -- this used to read
+// req.business?.id / req.user?.businessId, neither of which anything set
+// on this router, so it always resolved to undefined.
 function getBusinessId(req) {
-  return req.business?.id || req.user?.businessId;
+  return req.businessId;
 }
 
 // ─── Documents ────────────────────────────────────────────
@@ -22,7 +26,7 @@ async function listDocuments(req, res, next) {
       type: req.query.type,
       expiringSoon: req.query.expiringSoon === 'true',
     });
-    res.json(docs);
+    return success(res, 200, docs);
   } catch (err) {
     next(err);
   }
@@ -32,8 +36,8 @@ async function getDocument(req, res, next) {
   try {
     const businessId = getBusinessId(req);
     const doc = await complianceService.getDocument(businessId, req.params.id);
-    if (!doc) return res.status(404).json({ error: 'Document not found' });
-    res.json(doc);
+    if (!doc) return error(res, 404, 'Document not found');
+    return success(res, 200, doc);
   } catch (err) {
     next(err);
   }
@@ -44,7 +48,7 @@ async function createDocument(req, res, next) {
     const businessId = getBusinessId(req);
     const data = createDocumentSchema.parse(req.body);
     const doc = await complianceService.createDocument(businessId, data, req.user?.id);
-    res.status(201).json(doc);
+    return success(res, 201, doc);
   } catch (err) {
     next(err);
   }
@@ -55,7 +59,7 @@ async function updateDocument(req, res, next) {
     const businessId = getBusinessId(req);
     const data = updateDocumentSchema.parse(req.body);
     const doc = await complianceService.updateDocument(businessId, req.params.id, data);
-    res.json(doc);
+    return success(res, 200, doc);
   } catch (err) {
     next(err);
   }
@@ -65,7 +69,7 @@ async function deleteDocument(req, res, next) {
   try {
     const businessId = getBusinessId(req);
     await complianceService.deleteDocument(businessId, req.params.id);
-    res.status(204).end();
+    return success(res, 200, null, 'Document deleted');
   } catch (err) {
     next(err);
   }
@@ -78,7 +82,7 @@ async function recordTrainingAck(req, res, next) {
     const businessId = getBusinessId(req);
     const data = trainingAckSchema.parse(req.body);
     const ack = await complianceService.recordTrainingAck(businessId, data);
-    res.status(201).json(ack);
+    return success(res, 201, ack);
   } catch (err) {
     next(err);
   }
@@ -91,7 +95,7 @@ async function listTrainingAcks(req, res, next) {
       cleanerId: req.query.cleanerId,
       documentId: req.query.documentId,
     });
-    res.json(acks);
+    return success(res, 200, acks);
   } catch (err) {
     next(err);
   }
@@ -105,7 +109,7 @@ async function listAudits(req, res, next) {
     const audits = await complianceService.listAudits(businessId, {
       status: req.query.status,
     });
-    res.json(audits);
+    return success(res, 200, audits);
   } catch (err) {
     next(err);
   }
@@ -115,8 +119,8 @@ async function getAudit(req, res, next) {
   try {
     const businessId = getBusinessId(req);
     const audit = await complianceService.getAudit(businessId, req.params.id);
-    if (!audit) return res.status(404).json({ error: 'Audit not found' });
-    res.json(audit);
+    if (!audit) return error(res, 404, 'Audit not found');
+    return success(res, 200, audit);
   } catch (err) {
     next(err);
   }
@@ -127,7 +131,7 @@ async function createAudit(req, res, next) {
     const businessId = getBusinessId(req);
     const data = createAuditSchema.parse(req.body);
     const audit = await complianceService.createAudit(businessId, data);
-    res.status(201).json(audit);
+    return success(res, 201, audit);
   } catch (err) {
     next(err);
   }
@@ -138,7 +142,7 @@ async function updateAudit(req, res, next) {
     const businessId = getBusinessId(req);
     const data = updateAuditSchema.parse(req.body);
     const audit = await complianceService.updateAudit(businessId, req.params.id, data);
-    res.json(audit);
+    return success(res, 200, audit);
   } catch (err) {
     next(err);
   }
