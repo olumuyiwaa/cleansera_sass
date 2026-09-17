@@ -52,5 +52,6 @@ router.use('/calendar', require('../modules/calendar/calendar.routes'));
 router.use('/inventory', require('../modules/inventory/inventory.routes'));
 router.use('/compliance', require('../modules/compliance/compliance.routes'));
 router.use('/payroll', require('../modules/payroll/payroll.routes'));
+router.use('/waitlist', require('../modules/waitlist/waitlist.routes'));
 
 module.exports = router;

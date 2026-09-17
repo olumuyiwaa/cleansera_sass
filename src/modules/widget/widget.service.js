@@ -44,6 +44,66 @@ async function maybeCreateDepositSession(businessId, booking) {
   return { url: session.url, sessionId: session.id, depositRequiredCents };
 }
 
+/**
+ * Public balance check for the widget's "apply a gift card" field —
+ * intentionally returns the minimum needed to let the customer confirm a
+ * code is real and see what's on it, not the full row (no recipient PII,
+ * no purchasedByCustomerId).
+ */
+async function checkGiftCardBalance(businessId, code) {
+  const giftCard = await prisma.giftCard.findFirst({
+    where: { businessId, code: String(code || '').toUpperCase(), isActive: true },
+  });
+  if (!giftCard) return { valid: false, reason: 'not_found' };
+  if (!giftCard.purchasePaidAt) return { valid: false, reason: 'not_yet_active' };
+  if (giftCard.expiresAt && new Date(giftCard.expiresAt) < new Date()) {
+    return { valid: false, reason: 'expired' };
+  }
+  if (giftCard.balanceCents <= 0) return { valid: false, reason: 'zero_balance' };
+  return { valid: true, balanceCents: giftCard.balanceCents };
+}
+
+/**
+ * Redeems a gift card against a just-created booking, best-effort — same
+ * "non-fatal, booking still succeeds either way" pattern as
+ * maybeCreateDepositSession above. A booking failing because a gift card
+ * code had a typo would be a much worse outcome than the booking going
+ * through without the discount applied, so callers catch and ignore
+ * failures from this rather than letting them fail the whole request.
+ *
+ * The updateMany's `balanceCents: { gte: appliedCents }` guard is what
+ * keeps two near-simultaneous redemptions of the same card from ever
+ * pushing its balance negative — one succeeds, the other's updateMany
+ * matches zero rows and this returns null rather than double-spending.
+ */
+async function applyGiftCardToBooking(businessId, booking, giftCardCode) {
+  if (!giftCardCode) return null;
+
+  const giftCard = await prisma.giftCard.findFirst({
+    where: { businessId, code: String(giftCardCode).toUpperCase(), isActive: true },
+  });
+  if (!giftCard) return null;
+  if (!giftCard.purchasePaidAt) return null;
+  if (giftCard.expiresAt && new Date(giftCard.expiresAt) < new Date()) return null;
+  if (giftCard.balanceCents <= 0) return null;
+
+  const appliedCents = Math.min(giftCard.balanceCents, booking.quotedPriceCents);
+  if (appliedCents <= 0) return null;
+
+  const decremented = await prisma.giftCard.updateMany({
+    where: { id: giftCard.id, balanceCents: { gte: appliedCents } },
+    data: { balanceCents: { decrement: appliedCents } },
+  });
+  if (decremented.count === 0) return null; // lost the race — skip, don't double-spend
+
+  await prisma.booking.update({
+    where: { id: booking.id },
+    data: { giftCardId: giftCard.id, giftCardAppliedCents: appliedCents },
+  });
+
+  return { giftCardId: giftCard.id, appliedCents };
+}
+
 async function getStorefront(businessId) {
   const business = await prisma.business.findUnique({
     where: { id: businessId },
@@ -77,6 +137,7 @@ async function quote(businessId, {
   longitude,
   scheduledStart,
   couponCode,
+  giftCardCode,
   rooms,
   bathrooms,
   sqft,
@@ -107,6 +168,7 @@ async function quote(businessId, {
     addOnIds,
     scheduledStart,
     couponCode,
+    giftCardCode,
     rooms,
     bathrooms,
     sqft,
@@ -138,6 +200,7 @@ async function quote(businessId, {
     estimatedMinutes: quote.breakdown.estimatedMinutes,
     breakdown: quote.breakdown,
     coupon: quote.coupon,
+    giftCard: quote.giftCard,
     depositRequiredCents: depositRequiredCents || 0,
   };
 }
@@ -151,10 +214,10 @@ async function submitBooking(businessId, payload) {
     firstName, lastName, email, phone,
     addressLine1, addressLine2, city, state, latitude, longitude,
     serviceId, addOnIds = [], scheduledStart,
-    couponCode, referralCode,
+    couponCode, giftCardCode, referralCode,
   } = payload;
 
-  const { priceCents, estimatedMinutes, coupon: couponInfo } = await quote(businessId, { serviceId, addOnIds, latitude, longitude, scheduledStart, couponCode });
+  const { priceCents, estimatedMinutes, coupon: couponInfo } = await quote(businessId, { serviceId, addOnIds, latitude, longitude, scheduledStart, couponCode, giftCardCode });
 
   // availability: ensure at least one cleaner can cover the requested window
   if (scheduledStart) {
@@ -204,7 +267,9 @@ async function submitBooking(businessId, payload) {
     try { const notifications = require('../notifications/notifications.service'); await notifications.notifyBookingCreated(businessId, booking); await notifications.sendCustomerBookingConfirmation(businessId, booking, customer); } catch (e) {}
     let deposit = null;
     try { deposit = await maybeCreateDepositSession(businessId, booking); } catch (e) { /* non-fatal — booking still succeeds without card collection */ }
-    return { ...booking, deposit };
+    let giftCard = null;
+    try { giftCard = await applyGiftCardToBooking(businessId, booking, giftCardCode); } catch (e) { /* non-fatal — booking still succeeds without the gift card applied */ }
+    return { ...booking, deposit, giftCard };
   }
 
   // Referral program (only when no manual coupon was applied — the two
@@ -286,10 +351,19 @@ async function submitBooking(businessId, payload) {
 
   let deposit = null;
   try { deposit = await maybeCreateDepositSession(businessId, booking); } catch (e) { /* non-fatal */ }
-  return { ...booking, deposit, referralCode: customerReferralCode, referralDiscountCents };
+  let giftCard = null;
+  try { giftCard = await applyGiftCardToBooking(businessId, booking, giftCardCode); } catch (e) { /* non-fatal — booking still succeeds without the gift card applied */ }
+  return { ...booking, deposit, giftCard, referralCode: customerReferralCode, referralDiscountCents };
 }
 
-module.exports = { getStorefront, quote, submitBooking, maybeCreateDepositSession };
+module.exports = {
+  getStorefront,
+  quote,
+  submitBooking,
+  maybeCreateDepositSession,
+  checkGiftCardBalance,
+  applyGiftCardToBooking,
+};
 
 /**
  * Return available time slots for a given date and service. Query: ?serviceId=&date=YYYY-MM-DD&slotMinutes=&startHour=&endHour=&limit=

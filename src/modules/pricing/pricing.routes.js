@@ -46,4 +46,15 @@ router.put('/coupons/:id', requireRole('BUSINESS_OWNER','BUSINESS_MANAGER'), [
 
 router.delete('/coupons/:id', requireRole('BUSINESS_OWNER','BUSINESS_MANAGER'), [ param('id').notEmpty() ], validate, controller.deleteCoupon);
 
+router.get('/gift-cards', requireRole('BUSINESS_OWNER','BUSINESS_MANAGER'), controller.listGiftCards);
+router.post('/gift-cards', requireRole('BUSINESS_OWNER','BUSINESS_MANAGER'), [
+	body('code').optional().isString(),
+	body('initialValueCents').isInt({ min: 1 }).withMessage('initialValueCents must be a positive integer'),
+	body('recipientEmail').optional().isEmail(),
+	body('recipientName').optional().isString(),
+	body('message').optional().isString(),
+	body('expiresAt').optional().isISO8601(),
+], validate, controller.issueGiftCard);
+router.delete('/gift-cards/:id', requireRole('BUSINESS_OWNER','BUSINESS_MANAGER'), [ param('id').notEmpty() ], validate, controller.deactivateGiftCard);
+
 module.exports = router;

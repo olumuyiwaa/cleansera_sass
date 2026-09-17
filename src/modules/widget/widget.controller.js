@@ -37,4 +37,23 @@ async function submitBooking(req, res, next) {
   }
 }
 
-module.exports = { storefront, quote, slots, submitBooking };
+async function giftCardBalance(req, res, next) {
+  try {
+    const data = await service.checkGiftCardBalance(req.businessId, req.params.code);
+    return success(res, 200, data);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function joinWaitlist(req, res, next) {
+  try {
+    const waitlistService = require('../waitlist/waitlist.service');
+    const entry = await waitlistService.joinWaitlist(req.businessId, req.body);
+    return success(res, 201, entry, "You're on the waitlist — we'll reach out the moment a slot opens up");
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { storefront, quote, slots, submitBooking, giftCardBalance, joinWaitlist };

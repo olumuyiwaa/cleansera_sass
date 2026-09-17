@@ -74,6 +74,33 @@ async function deleteCoupon(req, res, next) {
   }
 }
 
+async function listGiftCards(req, res, next) {
+  try {
+    const rows = await service.listGiftCards(req.businessId);
+    return success(res, 200, rows);
+  } catch (e) {
+    next(e);
+  }
+}
+
+async function issueGiftCard(req, res, next) {
+  try {
+    const created = await service.issueGiftCard(req.businessId, req.body);
+    return success(res, 201, created, 'Gift card issued');
+  } catch (e) {
+    next(e);
+  }
+}
+
+async function deactivateGiftCard(req, res, next) {
+  try {
+    const updated = await service.deactivateGiftCard(req.businessId, req.params.id);
+    return success(res, 200, updated, 'Gift card deactivated');
+  } catch (e) {
+    next(e);
+  }
+}
+
 module.exports = {
   getPricing,
   updatePricing,
@@ -81,4 +108,7 @@ module.exports = {
   createCoupon,
   updateCoupon,
   deleteCoupon,
+  listGiftCards,
+  issueGiftCard,
+  deactivateGiftCard,
 };

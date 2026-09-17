@@ -109,6 +109,12 @@ model Business {
   name         String
   subdomain    String   @unique
   customDomain String?  @unique
+  // Fallback only — every real onboarding path (see registerBusiness in
+  // auth.service.js, and businesses.service.createLocation) accepts an
+  // explicit timezone and only falls through to this default when none is
+  // given. Kept as Europe/Amsterdam for historical reasons; not meant to
+  // imply a "primary market" alongside BusinessAddress.country's default
+  // below, which is unrelated and set independently.
   timezone     String   @default("Europe/Amsterdam")
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
@@ -166,6 +172,9 @@ model Business {
   cleanerCompensations CleanerCompensation[]
   cleanerEarnings      CleanerEarning[]
   payouts              Payout[]
+
+  giftCards      GiftCard[]
+  waitlistEntries WaitlistEntry[]
 
   @@index([subdomain])
   @@index([parentBusinessId])
@@ -227,6 +236,11 @@ model BusinessAddress {
   city       String
   state      String
   postalCode String
+  // Fallback only, same caveat as Business.timezone above — a real address
+  // form should always send an explicit country. Not coordinated with that
+  // default (Europe/Amsterdam) or DEFAULT_CURRENCY (usd) in .env.example;
+  // treat all three as independent per-field fallbacks, not a single
+  // "default market."
   country    String   @default("NG")
   latitude   Float?
   longitude  Float?
@@ -319,6 +333,80 @@ model Coupon {
 
   @@unique([businessId, code])
   @@index([businessId])
+}
+
+// A stored-value gift card issued by a business, optionally purchased by
+// one customer (and addressed to a recipient by email), redeemable against
+// any future booking with that business up to its remaining balance.
+// Unlike Coupon — a reusable discount *rule* — a GiftCard carries an actual
+// balance that's drawn down booking by booking: redeeming $25 of a $75
+// card against one job leaves $50 for next time, which Coupon has no way
+// to express.
+model GiftCard {
+  id                    String    @id @default(cuid())
+  businessId            String
+  business              Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  code                  String
+  initialValueCents     Int
+  balanceCents          Int
+  // Null when a business issues a card directly (comp, promo) rather than
+  // a customer buying one through the widget/portal.
+  purchasedByCustomerId String?
+  purchasedBy           Customer? @relation("GiftCardPurchasedBy", fields: [purchasedByCustomerId], references: [id])
+  recipientEmail        String?
+  recipientName         String?
+  message               String?
+  isActive              Boolean   @default(true)
+  expiresAt             DateTime?
+  // Set once the purchase itself has been paid for (as opposed to the
+  // balance being spent later) — null for cards a business issues for free.
+  stripeCheckoutSessionId String?
+  purchasePaidAt          DateTime?
+  createdAt             DateTime  @default(now())
+
+  bookings Booking[]
+
+  @@unique([businessId, code])
+  @@index([businessId])
+}
+
+enum WaitlistStatus {
+  WAITING
+  NOTIFIED
+  CONVERTED
+  EXPIRED
+  CANCELLED
+}
+
+// A customer's request to be notified when a slot opens up for a service
+// in a date range that had no availability at booking time. Created from
+// the public widget when a customer can't find an open slot; drained by
+// bookings.service.cancelBooking and dispatch.service (deleting an
+// assignment frees a cleaner/slot), which check for a matching entry
+// before just letting a freed-up slot go unfilled.
+model WaitlistEntry {
+  id         String         @id @default(cuid())
+  businessId String
+  business   Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customerId String?
+  customer   Customer?      @relation(fields: [customerId], references: [id])
+  // Guest waitlisting — kept alongside customerId so joining the waitlist
+  // from the public widget never forces account creation first.
+  contactName  String?
+  contactEmail String?
+  contactPhone String?
+  serviceId    String?
+  service      Service?       @relation(fields: [serviceId], references: [id])
+  desiredStart DateTime
+  desiredEnd   DateTime
+  notes        String?
+  status       WaitlistStatus @default(WAITING)
+  notifiedAt   DateTime?
+  convertedBookingId String?
+  createdAt    DateTime       @default(now())
+
+  @@index([businessId, status])
+  @@index([businessId, serviceId, desiredStart])
 }
 
 enum BusinessMemberRole {
@@ -608,6 +696,8 @@ model Customer {
   bookings           Booking[]
   recurringSchedules RecurringSchedule[]
   reviews            Review[]
+  giftCardsPurchased GiftCard[]      @relation("GiftCardPurchasedBy")
+  waitlistEntries    WaitlistEntry[]
 
   @@unique([businessId, phone])
   @@index([businessId])
@@ -658,6 +748,7 @@ model Service {
   addOns             ServiceAddOn[]
   bookings           Booking[]
   recurringSchedules RecurringSchedule[]
+  waitlistEntries    WaitlistEntry[]
 
   @@index([businessId])
 }
@@ -758,6 +849,13 @@ model Booking {
   quotedPriceCents        Int
   couponId                String?
   coupon                  Coupon?            @relation(fields: [couponId], references: [id])
+  // Independent of couponId — a booking can use a coupon and a gift card
+  // together (coupon lowers the price, gift card pays some/all of what's
+  // left). giftCardAppliedCents is capped at the card's balance at
+  // redemption time; the balance itself is decremented on the GiftCard row.
+  giftCardId              String?
+  giftCard                GiftCard?          @relation(fields: [giftCardId], references: [id])
+  giftCardAppliedCents    Int?
   // Set when this booking was placed using another customer's referral
   // code. Kept even though the discount itself is just baked into
   // quotedPriceCents, purely so "referrals converted" is reportable later

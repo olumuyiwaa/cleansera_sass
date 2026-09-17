@@ -49,8 +49,9 @@ function applyFrequencyDiscount(priceCents, frequency) {
 }
 
 async function calculateQuote(service, payload = {}) {
-  const { businessId, addOnIds = [], frequency, couponCode } = payload;
+  const { businessId, addOnIds = [], frequency, couponCode, giftCardCode } = payload;
   let couponInfo;
+  let giftCardInfo;
 
   // Single BusinessPricing lookup, reused below for both the PER_SQFT/
   // PER_ROOM rate override and the frequency-discount override. Previously
@@ -122,6 +123,38 @@ async function calculateQuote(service, payload = {}) {
     }
   }
 
+  // Preview a gift card's applicability without touching its balance —
+  // actual redemption (the atomic decrement) happens at booking time in
+  // widget.service.applyGiftCardToBooking, same preview/redeem split as
+  // coupons above. appliedCents is capped at what's actually owed after
+  // the coupon discount, so it's never shown as covering more than the job
+  // costs.
+  if (businessId && giftCardCode) {
+    try {
+      const giftCard = await prisma.giftCard.findFirst({
+        where: { businessId, code: String(giftCardCode).toUpperCase(), isActive: true },
+      });
+      if (!giftCard) {
+        giftCardInfo = { valid: false, reason: 'not_found' };
+      } else if (!giftCard.purchasePaidAt) {
+        giftCardInfo = { valid: false, reason: 'not_yet_active', giftCardId: giftCard.id };
+      } else if (giftCard.expiresAt && new Date(giftCard.expiresAt) < new Date()) {
+        giftCardInfo = { valid: false, reason: 'expired', giftCardId: giftCard.id };
+      } else if (giftCard.balanceCents <= 0) {
+        giftCardInfo = { valid: false, reason: 'zero_balance', giftCardId: giftCard.id };
+      } else {
+        giftCardInfo = {
+          valid: true,
+          giftCardId: giftCard.id,
+          balanceCents: giftCard.balanceCents,
+          appliedCents: Math.min(giftCard.balanceCents, total),
+        };
+      }
+    } catch (e) {
+      // ignore gift card lookup failures
+    }
+  }
+
   const breakdown = {
     base,
     addOnTotal,
@@ -132,6 +165,7 @@ async function calculateQuote(service, payload = {}) {
 
   const result = { priceCents: total, breakdown };
   if (typeof couponInfo !== 'undefined') result.coupon = couponInfo;
+  if (typeof giftCardInfo !== 'undefined') result.giftCard = giftCardInfo;
   return result;
 }
 

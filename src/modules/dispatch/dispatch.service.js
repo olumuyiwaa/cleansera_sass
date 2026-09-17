@@ -95,7 +95,7 @@ async function deleteAssignment(businessId, id) {
   await prisma.booking.update({ where: { id: a.bookingId }, data: { status: 'CONFIRMED' } });
 }
 
-module.exports = { listDispatchItems, createAssignment, getAssignment, deleteAssignment };
+module.exports = { listDispatchItems, createAssignment, getAssignment, deleteAssignment, suggestCleaners };
 
 async function suggestCleaners(businessId, bookingId, limit = 5) {
   const booking = await prisma.booking.findFirst({ where: { id: bookingId, businessId } });
@@ -134,4 +134,3 @@ async function suggestCleaners(businessId, bookingId, limit = 5) {
   return enriched.slice(0, limit);
 }
 
-module.exports.suggestCleaners = suggestCleaners;

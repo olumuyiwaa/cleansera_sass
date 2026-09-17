@@ -17,6 +17,7 @@ const bookingValidators = [
   body('state').trim().notEmpty(),
   body('scheduledStart').isISO8601(),
   body('couponCode').optional().isString(),
+  body('giftCardCode').optional().isString(),
   body('referralCode').optional().isString().isLength({ max: 20 }),
 ];
 
@@ -28,6 +29,19 @@ function widgetRoutesFor(resolveBusiness) {
   router.get('/storefront', controller.storefront);
   router.post('/quote', [body('serviceId').notEmpty()], validate, controller.quote);
   router.get('/slots', controller.slots);
+  router.get('/gift-cards/:code', controller.giftCardBalance);
+  router.post(
+    '/waitlist',
+    [
+      body('desiredStart').isISO8601(),
+      body('desiredEnd').isISO8601(),
+      body('serviceId').optional().isString(),
+      body('contactEmail').optional().isEmail(),
+      body('contactPhone').optional().isMobilePhone('any'),
+    ],
+    validate,
+    controller.joinWaitlist
+  );
   router.post('/bookings', bookingValidators, validate, controller.submitBooking);
 
   return router;

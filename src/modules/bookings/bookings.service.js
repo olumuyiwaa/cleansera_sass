@@ -6,6 +6,7 @@ const { createBookingCheckoutSession, createAncillaryCheckoutSession, createRefu
 const { computeInitialRunDate } = require('../../utils/timezone');
 const { evaluateCancellation } = require('../../lib/cancellationPolicy');
 const payroll = require('../payroll/payroll.service');
+const waitlist = require('../waitlist/waitlist.service');
 
 async function listBookings(businessId, { status } = {}, requester = null) {
   const cleanerScope =
@@ -583,6 +584,17 @@ async function cancelBooking(businessId, bookingId, actorUserId, reason, options
   });
   try {
     await notifications.notifyBookingCancelled(businessId, updated);
+  } catch (e) { /* non-fatal */ }
+  try {
+    // Someone else's cancellation is exactly the kind of freed slot a
+    // waitlisted customer is hoping for — check before this capacity goes
+    // unfilled. Never lets a notification failure affect the cancellation
+    // that already succeeded above.
+    await waitlist.notifyWaitlistForFreedSlot(businessId, {
+      serviceId: updated.serviceId,
+      scheduledStart: updated.scheduledStart,
+      scheduledEnd: updated.scheduledEnd,
+    });
   } catch (e) { /* non-fatal */ }
   return updated;
 }
