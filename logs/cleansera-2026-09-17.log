@@ -1,3 +1,8 @@
 {"level":"debug","message":"socket disconnected: fVGOqTNYmpDtQSGLAAAD","timestamp":"2026-09-17T09:27:43.326Z"}
 {"businessId":"cmu40j6p40002130ty0ggflsl","level":"error","message":"Service not found","path":"/api/v1/widget-embed/ladygreener/quote","stack":"Error: Service not found\n    at Object.quote (/Users/emmanuel.oladoyin/StudioProjects/cleansera_new/cleansera-api/src/modules/widget/widget.service.js:90:17)\n    at async quote (/Users/emmanuel.oladoyin/StudioProjects/cleansera_new/cleansera-api/src/modules/widget/widget.controller.js:15:18)","timestamp":"2026-09-17T09:27:45.097Z"}
 {"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-17T09:29:05.134Z"}
+{"level":"debug","message":"socket disconnected: _PLMN4LLUT2xApvRAAAB","timestamp":"2026-09-17T09:55:39.421Z"}
+{"level":"debug","message":"socket disconnected: 0TrJ_f5XRSjV6f5TAAAA","timestamp":"2026-09-17T11:49:08.003Z"}
+{"level":"debug","message":"socket disconnected: 2NaXh-qw401H34OfAAAD","timestamp":"2026-09-17T13:03:26.909Z"}
+{"level":"debug","message":"socket disconnected: eWg3wBfoOjVsg3UtAAAF","timestamp":"2026-09-17T13:24:31.284Z"}
+{"level":"info","message":"CleanSera API listening on port 8000","timestamp":"2026-09-17T14:26:38.597Z"}

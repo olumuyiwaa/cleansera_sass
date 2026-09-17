@@ -6,26 +6,27 @@ const notifications = require('../notifications/notifications.service');
 
 /**
  * Onboards a cleaner into a business. If no User exists for the given email,
- * one is created with a temporary password the cleaner resets on first login
- * (invite-link flow) — this repo stubs the "send invite" notification call.
+ * one is created with an unusable random password hash — the account can
+ * only be unlocked via the invite link (a real PasswordReset token) that
+ * sendInvite emails/texts to them, which they use to set their own password.
  */
 async function onboardCleaner(businessId, actorUserId, { firstName, lastName, email, phone, hireDate }) {
   let user = await prisma.user.findUnique({ where: { email } });
 
   if (!user) {
-    const tempPassword = crypto.randomBytes(12).toString('hex');
+    const unusablePassword = crypto.randomBytes(32).toString('hex');
     user = await prisma.user.create({
       data: {
         email,
         phone,
         firstName,
         lastName,
-        passwordHash: await bcrypt.hash(tempPassword, 12),
+        passwordHash: await bcrypt.hash(unusablePassword, 12),
       },
     });
-    // dispatch invite email/SMS with a password-set link (notifications module)
+    // dispatch invite email/SMS with a real password-set link (notifications module)
     try {
-      await notifications.sendInvite(businessId, user.id, { email, phone, tempPassword });
+      await notifications.sendInvite(businessId, user.id, { email, phone });
     } catch (e) {
       // non-fatal
     }

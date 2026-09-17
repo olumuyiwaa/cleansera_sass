@@ -259,7 +259,11 @@ async function requestPasswordReset(email) {
   const token = uuidv4();
   const expiresAt = new Date(Date.now() + 1000 * 60 * 60);
   await prisma.passwordReset.create({ data: { userId: user.id, token, expiresAt } });
-  const resetUrl = `${process.env.APP_URL || 'https://app.cleansera.example'}/auth/password-reset/confirm?token=${token}`;
+  // NOTE: this must match the actual frontend page, which lives at
+  // /reset-password (not /auth/password-reset/confirm — there is no such
+  // route in the Next.js app; see cleansera_sass_frontend's
+  // (full-width-pages)/(auth)/reset-password/page.tsx).
+  const resetUrl = `${process.env.APP_URL || 'https://app.cleansera.example'}/reset-password?token=${token}`;
   await notificationClient.sendEmail({
     to: user.email,
     subject: 'Reset your password',

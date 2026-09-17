@@ -38,18 +38,20 @@ async function inviteMember(businessId, actorUserId, { firstName, lastName, emai
   let user = await prisma.user.findUnique({ where: { email } });
 
   if (!user) {
-    const tempPassword = crypto.randomBytes(12).toString('hex');
+    // Unusable password hash — the account can only be unlocked via the
+    // real invite link (PasswordReset token) sendInvite emails/texts them.
+    const unusablePassword = crypto.randomBytes(32).toString('hex');
     user = await prisma.user.create({
       data: {
         email,
         phone,
         firstName,
         lastName,
-        passwordHash: await bcrypt.hash(tempPassword, 12),
+        passwordHash: await bcrypt.hash(unusablePassword, 12),
       },
     });
     try {
-      await notifications.sendInvite(businessId, user.id, { email, phone, tempPassword });
+      await notifications.sendInvite(businessId, user.id, { email, phone });
     } catch (e) {
       // non-fatal — the member row still exists; they can always be re-invited
     }

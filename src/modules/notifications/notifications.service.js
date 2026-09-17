@@ -2,10 +2,27 @@ const prisma = require('../../config/database');
 const { getIo } = require('../../config/socket');
 const logger = require('../../config/logger');
 const notificationClient = require('../../lib/notificationClient');
+const { v4: uuidv4 } = require('uuid');
 
-async function sendInvite(businessId, userId, { email, phone, tempPassword }) {
+// Invite links live longer than a forgot-password link (7 days vs 1 hour) —
+// the recipient didn't ask for this and may not check email right away.
+const INVITE_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+
+/**
+ * Sends an invite to a newly-created user (cleaner onboarding, staff invite).
+ * Generates a real PasswordReset token so the link actually works — this
+ * reuses the same token/route the "forgot password" flow uses, since
+ * "set your password via a link" is the same operation either way.
+ */
+async function sendInvite(businessId, userId, { email, phone }) {
+  const token = uuidv4();
+  const expiresAt = new Date(Date.now() + INVITE_TOKEN_TTL_MS);
+  await prisma.passwordReset.create({ data: { userId, token, expiresAt } });
+
+  const inviteUrl = `${process.env.APP_URL || 'https://app.cleansera.example'}/reset-password?token=${token}`;
+
   const title = 'You were invited to join CleanSera';
-  const body = `You've been invited to join a business on CleanSera. Use the provided link to set your password.`;
+  const body = `You've been invited to join a business on CleanSera. Set your password to get started: ${inviteUrl}`;
 
   const recipients = userId ? [userId] : [];
 
