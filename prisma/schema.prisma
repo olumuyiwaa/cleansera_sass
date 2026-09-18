@@ -36,12 +36,12 @@ model User {
   // the unique([businessId, userId]) note below) but should only ever have
   // to complete Stripe onboarding once. Both businesses' Payouts pay out to
   // the same connected account.
-  stripeConnectedAccountId String?  @unique
+  stripeConnectedAccountId String?   @unique
   stripeConnectOnboardedAt DateTime?
-  stripePayoutsEnabled     Boolean  @default(false)
+  stripePayoutsEnabled     Boolean   @default(false)
 
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   sessions            Session[]
   passwordResets      PasswordReset[]
@@ -173,7 +173,7 @@ model Business {
   cleanerEarnings      CleanerEarning[]
   payouts              Payout[]
 
-  giftCards      GiftCard[]
+  giftCards       GiftCard[]
   waitlistEntries WaitlistEntry[]
 
   @@index([subdomain])
@@ -196,7 +196,7 @@ model BusinessBranding {
   // that every business's site doesn't look identical once recolored.
   // Validated in businesses.service against a small fixed set rather than
   // an enum, so adding a new preset later never needs a migration.
-  themeStyle       String  @default("MODERN")
+  themeStyle       String   @default("MODERN")
   heroImageKey     String?
   aboutTitle       String?
   aboutBody        String?
@@ -223,7 +223,7 @@ model BusinessBranding {
   // order: string[] (subset/permutation of those four keys) }.
   sectionsEnabled  Json?
 
-  updatedAt          DateTime @updatedAt
+  updatedAt DateTime @updatedAt
 }
 
 model BusinessAddress {
@@ -241,7 +241,7 @@ model BusinessAddress {
   // default (Europe/Amsterdam) or DEFAULT_CURRENCY (usd) in .env.example;
   // treat all three as independent per-field fallbacks, not a single
   // "default market."
-  country    String   @default("NG")
+  country    String   @default("NL")
   latitude   Float?
   longitude  Float?
   isPrimary  Boolean  @default(false)
@@ -343,26 +343,26 @@ model Coupon {
 // card against one job leaves $50 for next time, which Coupon has no way
 // to express.
 model GiftCard {
-  id                    String    @id @default(cuid())
-  businessId            String
-  business              Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  code                  String
-  initialValueCents     Int
-  balanceCents          Int
+  id                      String    @id @default(cuid())
+  businessId              String
+  business                Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  code                    String
+  initialValueCents       Int
+  balanceCents            Int
   // Null when a business issues a card directly (comp, promo) rather than
   // a customer buying one through the widget/portal.
-  purchasedByCustomerId String?
-  purchasedBy           Customer? @relation("GiftCardPurchasedBy", fields: [purchasedByCustomerId], references: [id])
-  recipientEmail        String?
-  recipientName         String?
-  message               String?
-  isActive              Boolean   @default(true)
-  expiresAt             DateTime?
+  purchasedByCustomerId   String?
+  purchasedBy             Customer? @relation("GiftCardPurchasedBy", fields: [purchasedByCustomerId], references: [id])
+  recipientEmail          String?
+  recipientName           String?
+  message                 String?
+  isActive                Boolean   @default(true)
+  expiresAt               DateTime?
   // Set once the purchase itself has been paid for (as opposed to the
   // balance being spent later) — null for cards a business issues for free.
   stripeCheckoutSessionId String?
   purchasePaidAt          DateTime?
-  createdAt             DateTime  @default(now())
+  createdAt               DateTime  @default(now())
 
   bookings Booking[]
 
@@ -385,25 +385,25 @@ enum WaitlistStatus {
 // assignment frees a cleaner/slot), which check for a matching entry
 // before just letting a freed-up slot go unfilled.
 model WaitlistEntry {
-  id         String         @id @default(cuid())
-  businessId String
-  business   Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  customerId String?
-  customer   Customer?      @relation(fields: [customerId], references: [id])
+  id                 String         @id @default(cuid())
+  businessId         String
+  business           Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customerId         String?
+  customer           Customer?      @relation(fields: [customerId], references: [id])
   // Guest waitlisting — kept alongside customerId so joining the waitlist
   // from the public widget never forces account creation first.
-  contactName  String?
-  contactEmail String?
-  contactPhone String?
-  serviceId    String?
-  service      Service?       @relation(fields: [serviceId], references: [id])
-  desiredStart DateTime
-  desiredEnd   DateTime
-  notes        String?
-  status       WaitlistStatus @default(WAITING)
-  notifiedAt   DateTime?
+  contactName        String?
+  contactEmail       String?
+  contactPhone       String?
+  serviceId          String?
+  service            Service?       @relation(fields: [serviceId], references: [id])
+  desiredStart       DateTime
+  desiredEnd         DateTime
+  notes              String?
+  status             WaitlistStatus @default(WAITING)
+  notifiedAt         DateTime?
   convertedBookingId String?
-  createdAt    DateTime       @default(now())
+  createdAt          DateTime       @default(now())
 
   @@index([businessId, status])
   @@index([businessId, serviceId, desiredStart])
@@ -615,25 +615,25 @@ enum PayoutStatus {
 // onboarding, automatically via a Stripe transfer straight to the cleaner's
 // connected account — see payroll.service.payViaStripe.
 model Payout {
-  id          String         @id @default(cuid())
-  businessId  String
-  business    Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  cleanerId   String
-  cleaner     CleanerProfile @relation(fields: [cleanerId], references: [id], onDelete: Cascade)
-  periodStart DateTime
-  periodEnd   DateTime
-  totalCents  Int
-  status      PayoutStatus   @default(PENDING)
-  method      String? // MANUAL_CASH | MANUAL_TRANSFER | STRIPE | OTHER
-  reference   String?
+  id               String         @id @default(cuid())
+  businessId       String
+  business         Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  cleanerId        String
+  cleaner          CleanerProfile @relation(fields: [cleanerId], references: [id], onDelete: Cascade)
+  periodStart      DateTime
+  periodEnd        DateTime
+  totalCents       Int
+  status           PayoutStatus   @default(PENDING)
+  method           String? // MANUAL_CASH | MANUAL_TRANSFER | STRIPE | OTHER
+  reference        String?
   // Set only when method = STRIPE. The Stripe Transfer id moving funds from
   // the business's own connected account balance to the cleaner's connected
   // account — see stripeClient.payCleanerTransfer for why it's scoped that
   // way rather than off the platform's balance.
   stripeTransferId String?
-  paidAt      DateTime?
-  createdBy   String?
-  createdAt   DateTime       @default(now())
+  paidAt           DateTime?
+  createdBy        String?
+  createdAt        DateTime       @default(now())
 
   earnings CleanerEarning[]
 
@@ -696,7 +696,7 @@ model Customer {
   bookings           Booking[]
   recurringSchedules RecurringSchedule[]
   reviews            Review[]
-  giftCardsPurchased GiftCard[]      @relation("GiftCardPurchasedBy")
+  giftCardsPurchased GiftCard[]          @relation("GiftCardPurchasedBy")
   waitlistEntries    WaitlistEntry[]
 
   @@unique([businessId, phone])
@@ -722,11 +722,11 @@ model CustomerAddress {
   // (rather than only on Booking) so it's entered once and can be copied
   // onto each new booking/recurring job made against this address, instead
   // of the customer or dispatcher re-typing it every time.
-  accessCode           String?
-  keyLocation          String?
-  parkingInstructions  String?
-  petNotes             String?
-  specialInstructions  String?
+  accessCode          String?
+  keyLocation         String?
+  parkingInstructions String?
+  petNotes            String?
+  specialInstructions String?
 
   recurringSchedules RecurringSchedule[]
 
@@ -940,17 +940,17 @@ model Booking {
 }
 
 model BookingAssignment {
-  id           String         @id @default(cuid())
-  bookingId    String
-  booking      Booking        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  cleanerId    String
-  cleaner      CleanerProfile @relation(fields: [cleanerId], references: [id])
-  assignedAt   DateTime       @default(now())
+  id                   String         @id @default(cuid())
+  bookingId            String
+  booking              Booking        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  cleanerId            String
+  cleaner              CleanerProfile @relation(fields: [cleanerId], references: [id])
+  assignedAt           DateTime       @default(now())
   // Marks the point of contact for a multi-cleaner job — the one who gets
   // "on my way"/arrival notifications sent under their name to the
   // customer, and who the app can badge as lead on a team job. Meaningless
   // (and ignored) on a single-cleaner booking.
-  isTeamLead   Boolean        @default(false)
+  isTeamLead           Boolean        @default(false)
   // This cleaner's share, as a whole-number percent (0-100), of the
   // PERCENT-type earnings pool for this booking — see
   // payroll.service.js#computeEarningsForBooking. Null means "split the
@@ -966,11 +966,11 @@ model BookingAssignment {
   // since a cleaner might tap it, get delayed, and the business may want to
   // allow a re-send; the notification itself is what matters, this is just
   // an audit/idempotency timestamp of the most recent send.
-  onMyWayAt    DateTime?
-  checkedInAt  DateTime?
-  checkedOutAt DateTime?
-  checkInLat   Float?
-  checkInLng   Float?
+  onMyWayAt            DateTime?
+  checkedInAt          DateTime?
+  checkedOutAt         DateTime?
+  checkInLat           Float?
+  checkInLng           Float?
 
   @@index([bookingId])
   @@index([cleanerId])
