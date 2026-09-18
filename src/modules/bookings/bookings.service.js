@@ -73,7 +73,11 @@ async function assertNoCustomerConflict(businessId, customerId, start, end, excl
 }
 
 async function createBooking(businessId, actorUserId, payload) {
-  const { customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart, sqft, rooms, addOnIds, frequency, couponCode } = payload;
+  const {
+    customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude,
+    scheduledStart, sqft, rooms, addOnIds, frequency, couponCode,
+    accessCode, keyLocation, parkingInstructions, petNotes, specialInstructions,
+  } = payload;
   const service = await prisma.service.findFirst({ where: { id: serviceId, businessId }, include: { addOns: true } });
   if (!service) {
     const err = new Error('Service not found');
@@ -116,7 +120,7 @@ async function createBooking(businessId, actorUserId, payload) {
         }
       }
 
-      const b = await tx.booking.create({ data: { businessId, customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart: start, scheduledEnd: end, quotedPriceCents: quote.priceCents, status: 'REQUESTED', couponId: coupon.id } });
+      const b = await tx.booking.create({ data: { businessId, customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, accessCode, keyLocation, parkingInstructions, petNotes, specialInstructions, scheduledStart: start, scheduledEnd: end, quotedPriceCents: quote.priceCents, status: 'REQUESTED', couponId: coupon.id } });
 
       // attempt to increment redeemedCount with maxRedemptions enforcement
       if (coupon.maxRedemptions) {
@@ -137,7 +141,7 @@ async function createBooking(businessId, actorUserId, payload) {
     return booking;
   }
 
-  const booking = await prisma.booking.create({ data: { businessId, customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart: start, scheduledEnd: end, quotedPriceCents: quote.priceCents, status: 'REQUESTED' } });
+  const booking = await prisma.booking.create({ data: { businessId, customerId, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, accessCode, keyLocation, parkingInstructions, petNotes, specialInstructions, scheduledStart: start, scheduledEnd: end, quotedPriceCents: quote.priceCents, status: 'REQUESTED' } });
 
   await audit({ businessId, actorUserId, action: 'BOOKING_CREATED', entityType: 'Booking', entityId: booking.id });
   await notifications.notifyBookingCreated(businessId, booking);
@@ -158,7 +162,14 @@ async function updateBooking(businessId, id, patch) {
   return updated;
 }
 
-async function assignBooking(businessId, bookingId, cleanerId, actorUserId) {
+async function assignBooking(businessId, bookingId, cleanerId, actorUserId, options = {}) {
+  const { isTeamLead = false, earningsSplitPercent } = options;
+  if (earningsSplitPercent != null && (earningsSplitPercent < 0 || earningsSplitPercent > 100)) {
+    const err = new Error('earningsSplitPercent must be between 0 and 100');
+    err.status = 422;
+    throw err;
+  }
+
   const booking = await getBookingById(businessId, bookingId);
   const cleaner = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId, status: 'ACTIVE' } });
   if (!cleaner) {
@@ -189,7 +200,9 @@ async function assignBooking(businessId, bookingId, cleanerId, actorUserId) {
     throw err;
   }
 
-  const assignment = await prisma.bookingAssignment.create({ data: { bookingId, cleanerId } });
+  const assignment = await prisma.bookingAssignment.create({
+    data: { bookingId, cleanerId, isTeamLead, earningsSplitPercent },
+  });
   await prisma.booking.update({ where: { id: bookingId }, data: { status: 'ASSIGNED' } });
   await audit({ businessId, actorUserId, action: 'BOOKING_ASSIGNED', entityType: 'BookingAssignment', entityId: assignment.id, metadata: { cleanerId } });
   // notify assigned cleaner via notifications

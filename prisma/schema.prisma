@@ -717,6 +717,17 @@ model CustomerAddress {
   longitude  Float?
   isPrimary  Boolean  @default(false)
 
+  // Standing site info for this address — the things a cleaner needs on
+  // every visit regardless of which specific booking it is. Kept here
+  // (rather than only on Booking) so it's entered once and can be copied
+  // onto each new booking/recurring job made against this address, instead
+  // of the customer or dispatcher re-typing it every time.
+  accessCode           String?
+  keyLocation          String?
+  parkingInstructions  String?
+  petNotes             String?
+  specialInstructions  String?
+
   recurringSchedules RecurringSchedule[]
 
   @@index([customerId])
@@ -843,6 +854,17 @@ model Booking {
   state                   String
   latitude                Float?
   longitude               Float?
+  // Job-site info for this specific visit — copied from CustomerAddress at
+  // booking time when the booking was made against a saved address (same
+  // "freeze it on the booking" pattern as addressLine1/city/state above),
+  // or entered directly for a one-off/widget booking with no saved address.
+  // Kept editable per booking so a one-time addendum ("dog is at the vet
+  // this week") doesn't require overwriting the address's standing notes.
+  accessCode              String?
+  keyLocation             String?
+  parkingInstructions     String?
+  petNotes                String?
+  specialInstructions     String?
   scheduledStart          DateTime
   scheduledEnd            DateTime
   status                  BookingStatus      @default(REQUESTED)
@@ -924,6 +946,21 @@ model BookingAssignment {
   cleanerId    String
   cleaner      CleanerProfile @relation(fields: [cleanerId], references: [id])
   assignedAt   DateTime       @default(now())
+  // Marks the point of contact for a multi-cleaner job — the one who gets
+  // "on my way"/arrival notifications sent under their name to the
+  // customer, and who the app can badge as lead on a team job. Meaningless
+  // (and ignored) on a single-cleaner booking.
+  isTeamLead   Boolean        @default(false)
+  // This cleaner's share, as a whole-number percent (0-100), of the
+  // PERCENT-type earnings pool for this booking — see
+  // payroll.service.js#computeEarningsForBooking. Null means "split the
+  // pool evenly among this booking's assignments that don't have an
+  // explicit share set", so a solo booking (the overwhelming majority)
+  // behaves exactly as before this field existed: one assignment, nothing
+  // to split. Only matters for PERCENT-type compensation — HOURLY and
+  // FLAT_PER_JOB are already inherently per-person and are never scaled by
+  // this.
+  earningsSplitPercent Int?
   // Set when the cleaner taps "On my way" in the app — triggers an SMS/email
   // to the customer. Nullable/repeatable (not a strict state machine field)
   // since a cleaner might tap it, get delayed, and the business may want to

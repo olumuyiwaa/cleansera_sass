@@ -63,6 +63,33 @@ async function listCompensations(businessId) {
 }
 
 /**
+ * Resolves each assignment's share (0-1) of a booking's PERCENT-type
+ * earnings pool. Assignments with an explicit earningsSplitPercent use
+ * that; the remainder of the pool (100% minus whatever explicit shares
+ * already claim) is split evenly across the assignments that didn't set
+ * one. For the overwhelming majority case — a single assignment — this
+ * always resolves to 1 (100%), so solo bookings are completely unaffected
+ * by this logic.
+ */
+function resolveEarningsShares(assignments) {
+  const shares = new Map();
+  if (assignments.length <= 1) {
+    if (assignments.length === 1) shares.set(assignments[0].id, 1);
+    return shares;
+  }
+
+  const explicit = assignments.filter((a) => a.earningsSplitPercent != null);
+  const implicit = assignments.filter((a) => a.earningsSplitPercent == null);
+  const explicitTotal = explicit.reduce((sum, a) => sum + a.earningsSplitPercent, 0);
+  const remaining = Math.max(0, 100 - explicitTotal);
+  const evenShare = implicit.length > 0 ? remaining / implicit.length : 0;
+
+  for (const a of explicit) shares.set(a.id, a.earningsSplitPercent / 100);
+  for (const a of implicit) shares.set(a.id, evenShare / 100);
+  return shares;
+}
+
+/**
  * Computes each assigned cleaner's earning for a just-completed booking and
  * records it. Idempotent — safe to call more than once for the same
  * booking (e.g. the cleaner-complete path and an admin re-complete both
@@ -79,6 +106,18 @@ async function computeEarningsForBooking(businessId, bookingId) {
   });
   if (!booking || booking.assignments.length === 0) return [];
 
+  // Only PERCENT-type comp is scaled by team size — see
+  // resolveEarningsShares() and the earningsSplitPercent field comment in
+  // schema.prisma for why. Without this, two cleaners each configured at,
+  // say, a 50% PERCENT rate would each independently earn 50% of the job on
+  // a shared booking — 100% of the job paid out in cleaner wages alone,
+  // regardless of what the business actually intended to pay for a team
+  // job. HOURLY and FLAT_PER_JOB are untouched: both are already
+  // inherently per-person (actual hours worked; a flat stipend for
+  // participating), not a cut of the job total, so team size doesn't
+  // double-count them the same way.
+  const earningsShareByAssignmentId = resolveEarningsShares(booking.assignments);
+
   const created = [];
   for (const assignment of booking.assignments) {
     try {
@@ -92,7 +131,8 @@ async function computeEarningsForBooking(businessId, bookingId) {
 
       let amountCents = 0;
       if (comp.type === 'PERCENT') {
-        amountCents = Math.round(((booking.quotedPriceCents || 0) * comp.value) / 100);
+        const share = earningsShareByAssignmentId.get(assignment.id) ?? 1;
+        amountCents = Math.round(((booking.quotedPriceCents || 0) * comp.value * share) / 100);
       } else if (comp.type === 'FLAT_PER_JOB') {
         amountCents = comp.value;
       } else if (comp.type === 'HOURLY') {

@@ -164,6 +164,11 @@ async function addAddress(businessId, customerId, actorUserId, payload) {
       latitude: payload.latitude ?? null,
       longitude: payload.longitude ?? null,
       isPrimary: !!payload.isPrimary,
+      accessCode: payload.accessCode || null,
+      keyLocation: payload.keyLocation || null,
+      parkingInstructions: payload.parkingInstructions || null,
+      petNotes: payload.petNotes || null,
+      specialInstructions: payload.specialInstructions || null,
     },
   });
   await audit({ businessId, actorUserId, action: 'CUSTOMER_ADDRESS_ADDED', entityType: 'CustomerAddress', entityId: address.id });
@@ -182,7 +187,10 @@ async function updateAddress(businessId, customerId, addressId, actorUserId, pat
   if (patch.isPrimary) {
     await prisma.customerAddress.updateMany({ where: { customerId }, data: { isPrimary: false } });
   }
-  const allowed = ['label', 'line1', 'line2', 'city', 'state', 'postalCode', 'latitude', 'longitude', 'isPrimary'];
+  const allowed = [
+    'label', 'line1', 'line2', 'city', 'state', 'postalCode', 'latitude', 'longitude', 'isPrimary',
+    'accessCode', 'keyLocation', 'parkingInstructions', 'petNotes', 'specialInstructions',
+  ];
   const data = {};
   for (const k of allowed) {
     if (patch[k] !== undefined) data[k] = patch[k];

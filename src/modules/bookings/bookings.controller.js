@@ -39,7 +39,10 @@ async function update(req, res, next) {
 
 async function assign(req, res, next) {
   try {
-    const assignment = await service.assignBooking(req.businessId, req.params.id, req.body.cleanerId, req.user.id);
+    const assignment = await service.assignBooking(req.businessId, req.params.id, req.body.cleanerId, req.user.id, {
+      isTeamLead: req.body.isTeamLead,
+      earningsSplitPercent: req.body.earningsSplitPercent,
+    });
     return success(res, 200, assignment, 'Booking assigned');
   } catch (err) {
     next(err);

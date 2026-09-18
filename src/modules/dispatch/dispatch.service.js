@@ -13,7 +13,14 @@ async function listDispatchItems(businessId) {
 
 const scheduler = require('../../lib/scheduler');
 
-async function createAssignment(businessId, bookingId, cleanerId, actorUserId) {
+async function createAssignment(businessId, bookingId, cleanerId, actorUserId, options = {}) {
+  const { isTeamLead = false, earningsSplitPercent } = options;
+  if (earningsSplitPercent != null && (earningsSplitPercent < 0 || earningsSplitPercent > 100)) {
+    const err = new Error('earningsSplitPercent must be between 0 and 100');
+    err.status = 422;
+    throw err;
+  }
+
   const booking = await prisma.booking.findFirst({ where: { id: bookingId, businessId } });
   if (!booking) {
     const err = new Error('Booking not found');
@@ -66,7 +73,9 @@ async function createAssignment(businessId, bookingId, cleanerId, actorUserId) {
     });
   }
 
-  const assignment = await prisma.bookingAssignment.create({ data: { bookingId, cleanerId: chosenCleaner } });
+  const assignment = await prisma.bookingAssignment.create({
+    data: { bookingId, cleanerId: chosenCleaner, isTeamLead, earningsSplitPercent },
+  });
   await prisma.booking.update({ where: { id: bookingId }, data: { status: 'ASSIGNED' } });
   await audit({
     businessId,

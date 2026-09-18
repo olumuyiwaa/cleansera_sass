@@ -213,6 +213,7 @@ async function submitBooking(businessId, payload) {
   const {
     firstName, lastName, email, phone,
     addressLine1, addressLine2, city, state, latitude, longitude,
+    accessCode, keyLocation, parkingInstructions, petNotes, specialInstructions,
     serviceId, addOnIds = [], scheduledStart,
     couponCode, giftCardCode, referralCode,
   } = payload;
@@ -250,7 +251,7 @@ async function submitBooking(businessId, payload) {
         if (used >= coupon.perCustomerLimit) { const err = new Error('Coupon per-customer redemption limit reached'); err.status = 422; throw err; }
       }
 
-      const b = await tx.booking.create({ data: { businessId, customerId: cust.id, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, scheduledStart: start, scheduledEnd: end, quotedPriceCents: priceCents, status: 'REQUESTED', couponId: coupon.id } });
+      const b = await tx.booking.create({ data: { businessId, customerId: cust.id, serviceId, addressLine1, addressLine2, city, state, latitude, longitude, accessCode, keyLocation, parkingInstructions, petNotes, specialInstructions, scheduledStart: start, scheduledEnd: end, quotedPriceCents: priceCents, status: 'REQUESTED', couponId: coupon.id } });
 
       if (coupon.maxRedemptions) {
         const updated = await tx.coupon.updateMany({ where: { id: coupon.id, redeemedCount: { lt: coupon.maxRedemptions } }, data: { redeemedCount: { increment: 1 } } });
@@ -305,6 +306,11 @@ async function submitBooking(businessId, payload) {
       state,
       latitude,
       longitude,
+      accessCode,
+      keyLocation,
+      parkingInstructions,
+      petNotes,
+      specialInstructions,
       scheduledStart: start,
       scheduledEnd: end,
       quotedPriceCents: finalPriceCents,

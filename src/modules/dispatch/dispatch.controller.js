@@ -12,7 +12,10 @@ async function list(req, res, next) {
 
 async function createAssignment(req, res, next) {
   try {
-    const a = await service.createAssignment(req.businessId, req.body.bookingId, req.body.cleanerId, req.user.id);
+    const a = await service.createAssignment(req.businessId, req.body.bookingId, req.body.cleanerId, req.user.id, {
+      isTeamLead: req.body.isTeamLead,
+      earningsSplitPercent: req.body.earningsSplitPercent,
+    });
     return success(res, 201, a, 'Assignment created');
   } catch (err) {
     next(err);

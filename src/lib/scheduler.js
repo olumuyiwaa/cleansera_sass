@@ -5,20 +5,58 @@ function overlaps(aStart, aEnd, bStart, bEnd) {
   return aStart < bEnd && bStart < aEnd;
 }
 
-function timeToMinutes(t) {
+function timeParts(t) {
   // t is "HH:MM"
   const [hh, mm] = (t || '0:0').split(':').map(Number);
-  return hh * 60 + mm;
+  return [hh, mm];
 }
 
+/**
+ * Builds a slot's actual [start, end) window as real Date objects, anchored
+ * to the given calendar day (a Date already set to midnight on the day the
+ * shift *starts*). If the shift's end time is numerically at or before its
+ * start time (e.g. startTime "22:00", endTime "06:00"), the shift is
+ * treated as an overnight one that ends on the following calendar day,
+ * rather than as a zero/negative-length window.
+ */
+function buildSlotWindow(slot, anchorMidnight) {
+  const [sh, sm] = timeParts(slot.startTime);
+  const start = new Date(anchorMidnight);
+  start.setHours(sh, sm, 0, 0);
+
+  const [eh, em] = timeParts(slot.endTime);
+  const end = new Date(anchorMidnight);
+  end.setHours(eh, em, 0, 0);
+  if (end <= start) {
+    end.setDate(end.getDate() + 1);
+  }
+  return { start, end };
+}
+
+/**
+ * Whether an availability slot covers a booking's [startDate, endDate).
+ *
+ * A slot's dayOfWeek marks the day its shift *begins*. For a night-shift
+ * slot (e.g. Friday 22:00 - Saturday 06:00), a booking can fall on either
+ * side of midnight relative to that: the pre-midnight portion still falls
+ * on the slot's own dayOfWeek, but the post-midnight portion falls on the
+ * *next* calendar day, and a plain "day + time-of-day" comparison (as this
+ * used to be) can never match that half at all, since it never looks past
+ * midnight. To catch both halves, this builds the slot's absolute window
+ * anchored on the booking's own start day, and again anchored one day
+ * earlier, and accepts either.
+ */
 function slotCovers(slot, startDate, endDate) {
-  const day = startDate.getDay();
-  if (slot.dayOfWeek !== day) return false;
-  const s = timeToMinutes(slot.startTime);
-  const e = timeToMinutes(slot.endTime);
-  const startM = startDate.getHours() * 60 + startDate.getMinutes();
-  const endM = endDate.getHours() * 60 + endDate.getMinutes();
-  return startM >= s && endM <= e;
+  const dayOffsets = [0, -1];
+  for (const dayOffset of dayOffsets) {
+    const anchor = new Date(startDate);
+    anchor.setDate(anchor.getDate() + dayOffset);
+    anchor.setHours(0, 0, 0, 0);
+    if (anchor.getDay() !== slot.dayOfWeek) continue;
+    const { start, end } = buildSlotWindow(slot, anchor);
+    if (startDate >= start && endDate <= end) return true;
+  }
+  return false;
 }
 
 /**
