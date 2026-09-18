@@ -54,4 +54,8 @@ router.use('/compliance', require('../modules/compliance/compliance.routes'));
 router.use('/payroll', require('../modules/payroll/payroll.routes'));
 router.use('/waitlist', require('../modules/waitlist/waitlist.routes'));
 
+const portalRoutes = require('../modules/customerPortal/customerPortal.routes');
+router.use('/portal', portalRoutes);
+router.use('/portal-embed/:subdomain', portalRoutes.slugRouter);
+
 module.exports = router;
