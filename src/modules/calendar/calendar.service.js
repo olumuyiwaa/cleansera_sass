@@ -77,7 +77,10 @@ async function listEvents(businessId, { from, to, types } = {}) {
     const schedules = await prisma.recurringSchedule.findMany({
       where: {
         businessId,
-        isActive: true,
+        // RecurringSchedule has no `isActive` boolean — it uses the
+        // `status` enum (ACTIVE/PAUSED/CANCELLED), same as everywhere
+        // else this model is queried (bookings.service.js, recurringWorker.js).
+        status: 'ACTIVE',
         nextRunDate: { gte: fromDate, lte: toDate },
       },
       include: { customer: true, service: true },
