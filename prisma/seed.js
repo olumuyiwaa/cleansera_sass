@@ -53,7 +53,7 @@ async function seed() {
   // ─────────────────────────────────────────────
   // 3. BUSINESS + branding + hours + address + areas + pricing
   // ─────────────────────────────────────────────
-  let business = await prisma.business.findUnique({ where: { subdomain: 'example' } });
+  let business = await prisma.business.findUnique({ where: { subdomain: 'ladygreener' } });
   if (!business) {
     business = await prisma.business.create({
       data: {

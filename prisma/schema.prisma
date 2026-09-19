@@ -16,6 +16,12 @@ enum GlobalRole {
   PLATFORM_USER // any business-linked or customer user; specific role lives on BusinessMember/CleanerProfile/Customer
 }
 
+enum PreferredPaymentCollection {
+  ONLINE_CARD
+  MANUAL_OFFLINE
+  BOTH
+}
+
 model User {
   id               String     @id @default(cuid())
   email            String     @unique
@@ -134,10 +140,12 @@ model Business {
   // transferred to this connected account (minus the platform fee), never
   // held in CleanSera's own Stripe balance. Subscription billing
   // (BusinessSubscription below) is unrelated and unaffected by this.
-  stripeConnectedAccountId String? @unique
-  stripeConnectOnboarded   Boolean @default(false)
-  stripeChargesEnabled     Boolean @default(false)
-  stripePayoutsEnabled     Boolean @default(false)
+  stripeConnectedAccountId   String?                    @unique
+  stripeConnectOnboarded     Boolean                    @default(false)
+  stripeChargesEnabled       Boolean                    @default(false)
+  stripePayoutsEnabled       Boolean                    @default(false)
+  preferredPaymentCollection PreferredPaymentCollection @default(BOTH)
+  offlinePaymentInstructions String?                    @db.Text
 
   branding             BusinessBranding?
   addresses            BusinessAddress[]

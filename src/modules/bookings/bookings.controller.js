@@ -129,9 +129,31 @@ async function updatePayment(req, res, next) {
   }
 }
 
+
+
+async function markPaymentReceived(req, res, next) {
+  try {
+    const booking = await service.markPaymentReceived(
+        req.businessId,
+        req.params.id,
+        req.user.id,
+        {
+          method: req.body?.method,
+          reference: req.body?.reference,
+          amountCents: req.body?.amountCents,
+          note: req.body?.note,
+        }
+    );
+    return success(res, 200, booking, 'Payment marked as received');
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports.cancel = cancel;
 module.exports.reschedule = reschedule;
 module.exports.updatePayment = updatePayment;
+module.exports.markPaymentReceived = markPaymentReceived;
 
 async function createPaymentLink(req, res, next) {
   try {

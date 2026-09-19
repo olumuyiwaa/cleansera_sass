@@ -110,11 +110,6 @@ async function getStorefront(businessId) {
     include: { branding: true, hours: true },
   });
   if (business?.branding) {
-    // This is the fix for a real bug: the frontend's widget/site pages
-    // have been reading business.branding.logoUrl (and now also expect
-    // heroImageUrl/galleryImageUrls) all along, but nothing here ever
-    // populated those fields — only the raw *Key columns came through, so
-    // no business's logo has actually rendered on their public site.
     business.branding = toPublicBranding(business.branding);
   }
   const services = await prisma.service.findMany({
@@ -122,12 +117,27 @@ async function getStorefront(businessId) {
     include: { addOns: true },
   });
   const areaCount = await prisma.serviceArea.count({ where: { businessId } });
-  // Soft signal only — the widget stays fully loadable either way so a
-  // business mid-setup can still preview it, but the frontend uses this to
-  // show a "not yet accepting online bookings" state instead of a booking
-  // form with no services/areas to actually select.
-  const onboardingComplete = services.length > 0 && business?.hours?.length > 0 && areaCount > 0;
-  return { business, services, onboardingComplete };
+  const onboardingComplete =
+      services.length > 0 && business?.hours?.length > 0 && areaCount > 0;
+
+  const onlineCardReady =
+      !!business?.stripeChargesEnabled && !!business?.stripeConnectedAccountId;
+  const preferred = business?.preferredPaymentCollection || 'BOTH';
+  const canPayByCard =
+      onlineCardReady && (preferred === 'ONLINE_CARD' || preferred === 'BOTH');
+  const canPayOffline =
+      preferred === 'MANUAL_OFFLINE' || preferred === 'BOTH';
+
+  return {
+    business,
+    services,
+    onboardingComplete,
+    payment: {
+      onlineCardReady: canPayByCard,
+      offlineAccepted: canPayOffline,
+      offlinePaymentInstructions: business?.offlinePaymentInstructions || null,
+    },
+  };
 }
 
 async function quote(businessId, {

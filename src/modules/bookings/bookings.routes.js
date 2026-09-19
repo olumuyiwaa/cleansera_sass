@@ -43,6 +43,7 @@ router.put('/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller
 router.post('/:id/assign', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.assign);
 router.post('/:id/confirm', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.confirm);
 router.post('/:id/complete', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.complete);
+router.post('/:id/mark-payment-received', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.markPaymentReceived);
 router.post(
 	'/:id/cancel',
 	requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'),

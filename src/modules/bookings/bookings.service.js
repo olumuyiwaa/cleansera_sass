@@ -220,6 +220,61 @@ async function confirmBooking(businessId, bookingId, actorUserId) {
   return updated;
 }
 
+async function markPaymentReceived(
+    businessId,
+    bookingId,
+    actorUserId,
+    { method = 'BANK_TRANSFER', reference = null, amountCents = null, note = null } = {}
+) {
+  const booking = await prisma.booking.findFirst({
+    where: { id: bookingId, businessId },
+  });
+  if (!booking) {
+    const err = new Error('Booking not found');
+    err.status = 404;
+    throw err;
+  }
+  if (booking.paymentStatus === 'PAID') {
+    return booking; // idempotent
+  }
+
+  const allowed = ['CASH', 'BANK_TRANSFER', 'INVOICE', 'OTHER'];
+  const payMethod = allowed.includes(method) ? method : 'OTHER';
+  const paidAmount =
+      amountCents != null && Number.isInteger(amountCents) && amountCents >= 0
+          ? amountCents
+          : booking.quotedPriceCents;
+
+  const paymentNoteParts = [
+    `manual:${payMethod}`,
+    reference ? `ref:${String(reference).slice(0, 120)}` : null,
+    note ? `note:${String(note).slice(0, 200)}` : null,
+    `by:${actorUserId}`,
+    `at:${new Date().toISOString()}`,
+  ].filter(Boolean);
+
+  const updated = await prisma.booking.update({
+    where: { id: bookingId },
+    data: {
+      paymentStatus: 'PAID',
+      paymentNote: [booking.paymentNote, paymentNoteParts.join(';')]
+          .filter(Boolean)
+          .join(' | '),
+    },
+  });
+
+  await audit({
+    businessId,
+    actorUserId,
+    action: 'BOOKING_PAYMENT_MARKED_RECEIVED',
+    entityType: 'Booking',
+    entityId: bookingId,
+    metadata: { method: payMethod, reference, amountCents: paidAmount },
+  });
+
+  return updated;
+}
+
 async function completeBooking(businessId, bookingId, actorUserId, options = {}) {
   const { requestReview = true, force = false } = options;
 
@@ -798,6 +853,7 @@ module.exports = {
   createBooking,
   updateBooking,
   assignBooking,
+  markPaymentReceived,
   confirmBooking,
   // Admin complete goes through review + optional payment path
   completeBooking: completeBookingWithReview,

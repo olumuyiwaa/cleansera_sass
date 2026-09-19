@@ -82,7 +82,15 @@ async function listBusinesses(businessId) {
 // stripeConnectedAccountId, isActive, parentBusinessId, or anything else on
 // the model. The dashboard's own updateBusiness() type already only ever
 // sends these three fields — this just makes the backend enforce it too.
-const PATCHABLE_BUSINESS_FIELDS = ['name', 'timezone', 'customDomain'];
+const PATCHABLE_BUSINESS_FIELDS = [
+  'name',
+  'timezone',
+  'customDomain',
+  'preferredPaymentCollection',
+  'offlinePaymentInstructions',
+];
+
+const ALLOWED_PAYMENT_COLLECTION = ['ONLINE_CARD', 'MANUAL_OFFLINE', 'BOTH'];
 
 async function updateBusiness(businessId, patch) {
   const b = await prisma.business.findUnique({ where: { id: businessId } });
@@ -95,6 +103,24 @@ async function updateBusiness(businessId, patch) {
   const data = {};
   for (const key of PATCHABLE_BUSINESS_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(patch, key)) data[key] = patch[key];
+  }
+
+  if ('preferredPaymentCollection' in data) {
+    if (!ALLOWED_PAYMENT_COLLECTION.includes(data.preferredPaymentCollection)) {
+      const err = new Error(
+          `preferredPaymentCollection must be one of ${ALLOWED_PAYMENT_COLLECTION.join(', ')}`
+      );
+      err.status = 422;
+      throw err;
+    }
+  }
+
+  if ('offlinePaymentInstructions' in data) {
+    const raw = data.offlinePaymentInstructions;
+    data.offlinePaymentInstructions =
+        raw == null || String(raw).trim() === ''
+            ? null
+            : String(raw).trim().slice(0, 4000);
   }
 
   // Normalize empty string → null so "" and null are the same "no domain"
@@ -257,6 +283,8 @@ async function getStripeConnectStatus(businessId) {
       stripeConnectOnboarded: true,
       stripeChargesEnabled: true,
       stripePayoutsEnabled: true,
+      preferredPaymentCollection: true,
+      offlinePaymentInstructions: true,
     },
   });
   if (!b) {
@@ -264,15 +292,33 @@ async function getStripeConnectStatus(businessId) {
     err.status = 404;
     throw err;
   }
+
+  const onlineCardReady =
+      !!b.stripeChargesEnabled && !!b.stripeConnectedAccountId;
+  const preferred = b.preferredPaymentCollection || 'BOTH';
+  const prefersOnline =
+      preferred === 'ONLINE_CARD' || preferred === 'BOTH';
+  const prefersOffline =
+      preferred === 'MANUAL_OFFLINE' || preferred === 'BOTH';
+
   return {
     connected: !!b.stripeConnectedAccountId,
     onboarded: b.stripeConnectOnboarded,
     chargesEnabled: b.stripeChargesEnabled,
     payoutsEnabled: b.stripePayoutsEnabled,
-    // true only once Stripe has actually confirmed the account can take
-    // charges — this, not `connected`, is what should gate the "share your
-    // booking link" call to action in the dashboard.
-    readyForPayments: b.stripeChargesEnabled,
+    // kept for existing dashboard code
+    readyForPayments: onlineCardReady,
+
+    // explicit product language — Connect is never required
+    optional: true,
+    onlineCardReady,
+    canAcceptCardPayments: onlineCardReady && prefersOnline,
+    canAcceptOfflinePayments: prefersOffline,
+    preferredPaymentCollection: preferred,
+    offlinePaymentInstructions: b.offlinePaymentInstructions || null,
+    message: onlineCardReady
+        ? 'Card payments are enabled via Stripe.'
+        : 'Stripe Connect is optional. You can collect payment by cash or bank transfer and mark bookings paid in the dashboard.',
   };
 }
 
@@ -404,17 +450,24 @@ async function updateHours(businessId, hours) {
 // half-configured business — this exposes a checklist the dashboard uses to
 // force new owners through setup before they can use the rest of the app.
 const ONBOARDING_STEPS = [
-  { key: 'stripeConnect', label: 'Connect Stripe to accept customer payments' },
-  { key: 'services', label: 'Add at least one service' },
-  { key: 'hours', label: 'Set your business hours' },
-  { key: 'serviceAreas', label: 'Define at least one service area' },
+  { key: 'services', label: 'Add at least one service', required: true },
+  { key: 'hours', label: 'Set your business hours', required: true },
+  { key: 'serviceAreas', label: 'Define at least one service area', required: true },
+  {
+    key: 'stripeConnect',
+    label: 'Connect Stripe to accept card payments (optional)',
+    required: false,
+  },
 ];
 
 async function getOnboardingStatus(businessId) {
   const [business, serviceCount, hoursCount, areaCount] = await Promise.all([
     prisma.business.findUnique({
       where: { id: businessId },
-      select: { stripeConnectOnboarded: true, stripeChargesEnabled: true },
+      select: {
+        stripeConnectOnboarded: true,
+        stripeChargesEnabled: true,
+      },
     }),
     prisma.service.count({ where: { businessId, isActive: true } }),
     prisma.businessHours.count({ where: { businessId } }),
@@ -422,19 +475,35 @@ async function getOnboardingStatus(businessId) {
   ]);
 
   const completed = {
-    stripeConnect: !!(business?.stripeConnectOnboarded && business?.stripeChargesEnabled),
     services: serviceCount > 0,
     hours: hoursCount > 0,
     serviceAreas: areaCount > 0,
+    stripeConnect: !!(business?.stripeConnectOnboarded && business?.stripeChargesEnabled),
   };
 
-  const steps = ONBOARDING_STEPS.map((s) => ({ ...s, complete: completed[s.key] }));
-  const isComplete = steps.every((s) => s.complete);
+  const steps = ONBOARDING_STEPS.map((s) => ({
+    key: s.key,
+    label: s.label,
+    required: s.required,
+    complete: completed[s.key],
+  }));
+
+  // Only required steps block go-live
+  const isComplete = steps.filter((s) => s.required).every((s) => s.complete);
+
+  const nextIncompleteRequired =
+      steps.find((s) => s.required && !s.complete)?.key || null;
+  const nextIncompleteStep =
+      nextIncompleteRequired || steps.find((s) => !s.complete)?.key || null;
 
   return {
     isComplete,
     steps,
-    nextIncompleteStep: steps.find((s) => !s.complete)?.key || null,
+    nextIncompleteStep,
+    requiredComplete: isComplete,
+    optionalStepsRemaining: steps
+        .filter((s) => !s.required && !s.complete)
+        .map((s) => s.key),
   };
 }
 
