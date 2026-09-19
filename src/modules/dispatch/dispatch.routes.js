@@ -14,6 +14,9 @@ router.get('/', controller.list);
 // plan; only the ranked-suggestions endpoint and the auto-pick path inside
 // createAssignment (see dispatch.service.js) are gated.
 router.get('/suggest', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), requirePlanFeature('autoDispatch', 'Auto-suggested dispatch'), controller.suggestCleaners);
+// Basic route/travel-time awareness for one cleaner's day — same "smart
+// dispatch" plan tier as /suggest above, not a separate feature flag.
+router.get('/route/:cleanerId', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), requirePlanFeature('autoDispatch', 'Route awareness'), controller.getCleanerDayRoute);
 router.post('/', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.createAssignment);
 router.get('/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.getAssignment);
 router.delete('/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.removeAssignment);

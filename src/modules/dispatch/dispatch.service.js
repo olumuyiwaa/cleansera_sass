@@ -104,7 +104,100 @@ async function deleteAssignment(businessId, id) {
   await prisma.booking.update({ where: { id: a.bookingId }, data: { status: 'CONFIRMED' } });
 }
 
-module.exports = { listDispatchItems, createAssignment, getAssignment, deleteAssignment, suggestCleaners };
+module.exports = { listDispatchItems, createAssignment, getAssignment, deleteAssignment, suggestCleaners, getCleanerDayRoute };
+
+/**
+ * Basic route/travel-time awareness for a cleaner's day. Deliberately does
+ * NOT reorder jobs — each booking has a customer-facing scheduled time
+ * that isn't the algorithm's to move — so this is not a traveling-salesman
+ * route optimizer. What it does do: walk the day's jobs in their already-
+ * scheduled order, estimate the drive between each consecutive pair (real
+ * Distance Matrix data when GOOGLE_DISTANCE_MATRIX_API_KEY is configured,
+ * the same haversine straight-line fallback used elsewhere otherwise), and
+ * flag any pair where the gap between one job ending and the next starting
+ * is tighter than the estimated drive — the concrete, actionable thing a
+ * dispatcher can do something about (nudge a time, reassign one of the
+ * two, or just know to expect a late arrival).
+ */
+async function getCleanerDayRoute(businessId, cleanerId, dateStr) {
+  const cleaner = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId } });
+  if (!cleaner) {
+    const err = new Error('Cleaner not found for this business');
+    err.status = 404;
+    throw err;
+  }
+
+  const dayStart = new Date(`${dateStr}T00:00:00`);
+  const dayEnd = new Date(`${dateStr}T23:59:59.999`);
+  if (Number.isNaN(dayStart.getTime())) {
+    const err = new Error('date must be a valid YYYY-MM-DD');
+    err.status = 422;
+    throw err;
+  }
+
+  const assignments = await prisma.bookingAssignment.findMany({
+    where: {
+      cleanerId,
+      booking: { businessId, status: { not: 'CANCELLED' }, scheduledStart: { gte: dayStart, lte: dayEnd } },
+    },
+    include: { booking: { include: { customer: true } } },
+    orderBy: { booking: { scheduledStart: 'asc' } },
+  });
+
+  const stops = assignments.map((a) => ({
+    bookingId: a.bookingId,
+    address: `${a.booking.addressLine1}, ${a.booking.city}`,
+    scheduledStart: a.booking.scheduledStart,
+    scheduledEnd: a.booking.scheduledEnd,
+    latitude: a.booking.latitude,
+    longitude: a.booking.longitude,
+  }));
+
+  const distanceClient = require('../../lib/distance');
+  const { distanceMeters } = require('../../utils/geo');
+
+  const legs = [];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const from = stops[i];
+    const to = stops[i + 1];
+    let distanceMetersVal = null;
+    let driveSeconds = null;
+
+    if (from.latitude != null && from.longitude != null && to.latitude != null && to.longitude != null) {
+      try {
+        const dd = await distanceClient.distanceAndDuration(
+            { lat: from.latitude, lng: from.longitude },
+            { lat: to.latitude, lng: to.longitude }
+        );
+        if (dd) {
+          distanceMetersVal = dd.distanceMeters;
+          driveSeconds = dd.durationSeconds;
+        }
+      } catch (e) {
+        // fall through to straight-line estimate
+      }
+      if (distanceMetersVal == null) {
+        distanceMetersVal = distanceMeters(from.latitude, from.longitude, to.latitude, to.longitude);
+        // Rough city-driving estimate (~30 km/h average) when no real
+        // routing data is available — clearly an estimate, never
+        // presented as a real ETA.
+        driveSeconds = Math.round((distanceMetersVal / 1000 / 30) * 3600);
+      }
+    }
+
+    const gapSeconds = (to.scheduledStart.getTime() - from.scheduledEnd.getTime()) / 1000;
+    legs.push({
+      fromBookingId: from.bookingId,
+      toBookingId: to.bookingId,
+      distanceMeters: distanceMetersVal,
+      estimatedDriveSeconds: driveSeconds,
+      gapSeconds,
+      isTight: driveSeconds != null && gapSeconds < driveSeconds,
+    });
+  }
+
+  return { date: dateStr, stops, legs };
+}
 
 async function suggestCleaners(businessId, bookingId, limit = 5) {
   const booking = await prisma.booking.findFirst({ where: { id: bookingId, businessId } });

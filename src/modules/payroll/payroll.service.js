@@ -175,6 +175,29 @@ async function listEarnings(businessId, { cleanerId, status } = {}) {
   });
 }
 
+/**
+ * Business-wide payroll totals for the dashboard's payroll page — without
+ * this, the page only ever showed flat per-row earnings/payouts tables
+ * with no aggregate anywhere, so answering "how much payroll do we
+ * currently owe across the team?" meant manually adding up rows by hand.
+ * Mirrors getEarningsSummaryByCleanerId's PENDING+IN_PAYOUT vs PAID split.
+ */
+async function getBusinessPayrollSummary(businessId) {
+  const [pending, paid, pendingPayoutsTotal, cleanersWithPending] = await Promise.all([
+    prisma.cleanerEarning.aggregate({ where: { businessId, status: { in: ['PENDING', 'IN_PAYOUT'] } }, _sum: { amountCents: true } }),
+    prisma.cleanerEarning.aggregate({ where: { businessId, status: 'PAID' }, _sum: { amountCents: true } }),
+    prisma.payout.aggregate({ where: { businessId, status: 'PENDING' }, _sum: { totalCents: true } }),
+    prisma.cleanerEarning.groupBy({ by: ['cleanerId'], where: { businessId, status: 'PENDING' }, _sum: { amountCents: true } }),
+  ]);
+
+  return {
+    pendingEarningsCents: pending._sum.amountCents || 0,
+    lifetimePaidCents: paid._sum.amountCents || 0,
+    pendingPayoutsCents: pendingPayoutsTotal._sum.totalCents || 0,
+    cleanersWithPendingEarnings: cleanersWithPending.length,
+  };
+}
+
 
 /**
  * A cleaner's own earnings summary — used by the cleaner app instead of the
@@ -384,6 +407,7 @@ module.exports = {
   listEarnings,
   getMyEarningsSummary,
   getEarningsSummaryByCleanerId,
+  getBusinessPayrollSummary,
   createPayout,
   markPayoutPaid,
   payViaStripe,

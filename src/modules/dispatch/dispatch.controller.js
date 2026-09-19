@@ -56,4 +56,19 @@ async function suggestCleaners(req, res, next) {
   }
 }
 
-module.exports = { list, createAssignment, getAssignment, removeAssignment, suggestCleaners };
+async function getCleanerDayRoute(req, res, next) {
+  try {
+    const date = req.query.date;
+    if (!date) {
+      const err = new Error('date query param (YYYY-MM-DD) required');
+      err.status = 422;
+      throw err;
+    }
+    const route = await service.getCleanerDayRoute(req.businessId, req.params.cleanerId, date);
+    return success(res, 200, route);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { list, createAssignment, getAssignment, removeAssignment, suggestCleaners, getCleanerDayRoute };

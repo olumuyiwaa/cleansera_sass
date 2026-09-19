@@ -28,6 +28,15 @@ async function listEarnings(req, res, next) {
   }
 }
 
+async function getSummary(req, res, next) {
+  try {
+    const summary = await service.getBusinessPayrollSummary(req.businessId);
+    return success(res, 200, summary);
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function myEarnings(req, res, next) {
   try {
     const summary = await service.getMyEarningsSummary(req.user.id);
@@ -77,6 +86,7 @@ module.exports = {
   listCompensations,
   setCompensation,
   listEarnings,
+  getSummary,
   myEarnings,
   listPayouts,
   createPayout,

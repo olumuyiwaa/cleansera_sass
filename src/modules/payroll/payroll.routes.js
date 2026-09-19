@@ -18,6 +18,7 @@ router.put(
 );
 
 router.get('/earnings', controller.listEarnings);
+router.get('/summary', controller.getSummary);
 
 router.get('/payouts', controller.listPayouts);
 router.post(
