@@ -7,6 +7,17 @@ const { computeInitialRunDate } = require('../../utils/timezone');
 const { evaluateCancellation } = require('../../lib/cancellationPolicy');
 const payroll = require('../payroll/payroll.service');
 const waitlist = require('../waitlist/waitlist.service');
+const { pick } = require('../../utils/pick');
+
+// Fields staff may edit directly on an existing booking. Status, payment
+// state, schedule and tenant are deliberately absent: they change through the
+// dedicated confirm/complete/cancel/reschedule/payment endpoints, which apply
+// the business rules (conflict checks, refunds, notifications, payroll).
+const BOOKING_EDITABLE_FIELDS = [
+  'addressLine1', 'addressLine2', 'city', 'state', 'latitude', 'longitude',
+  'accessCode', 'keyLocation', 'parkingInstructions', 'petNotes', 'specialInstructions',
+  'quotedPriceCents', 'autoChargeOnComplete',
+];
 
 async function listBookings(businessId, { status } = {}, requester = null) {
   const cleanerScope =
@@ -157,8 +168,26 @@ async function createBooking(businessId, actorUserId, payload) {
 
 async function updateBooking(businessId, id, patch) {
   const booking = await getBookingById(businessId, id);
-  const updated = await prisma.booking.update({ where: { id }, data: patch });
-  await audit({ businessId, action: 'BOOKING_UPDATED', entityType: 'Booking', entityId: id, metadata: patch });
+  const data = pick(patch, BOOKING_EDITABLE_FIELDS);
+  if ('quotedPriceCents' in data) {
+    if (!Number.isInteger(data.quotedPriceCents) || data.quotedPriceCents < 0) {
+      const err = new Error('quotedPriceCents must be a non-negative integer');
+      err.status = 422;
+      throw err;
+    }
+    if (booking.paymentStatus === 'PAID' || booking.depositPaidAt) {
+      const err = new Error('The price cannot be changed after a payment has been received');
+      err.status = 409;
+      throw err;
+    }
+  }
+  if (Object.keys(data).length === 0) {
+    const err = new Error('No editable fields supplied');
+    err.status = 422;
+    throw err;
+  }
+  const updated = await prisma.booking.update({ where: { id }, data });
+  await audit({ businessId, action: 'BOOKING_UPDATED', entityType: 'Booking', entityId: id, metadata: data });
   return updated;
 }
 

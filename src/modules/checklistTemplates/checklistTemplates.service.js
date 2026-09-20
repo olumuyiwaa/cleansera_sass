@@ -1,4 +1,7 @@
 const prisma = require('../../config/database');
+const { pick } = require('../../utils/pick');
+
+const TEMPLATE_FIELDS = ['name', 'items'];
 
 async function listTemplates(businessId) {
   return prisma.checklistTemplate.findMany({ where: { businessId }, orderBy: { createdAt: 'desc' } });
@@ -22,7 +25,7 @@ async function createTemplate(businessId, payload) {
 
 async function updateTemplate(businessId, id, patch) {
   const t = await getTemplate(businessId, id);
-  const updated = await prisma.checklistTemplate.update({ where: { id: t.id }, data: patch });
+  const updated = await prisma.checklistTemplate.update({ where: { id: t.id }, data: pick(patch, TEMPLATE_FIELDS) });
   return updated;
 }
 

@@ -26,6 +26,13 @@ const validate = require('../../middleware/validate');
 const { success } = require('../../utils/response');
 const bookingsService = require('./bookings.service');
 const cleanersService = require('../cleaners/cleaners.service');
+const { assertPhotoKeyBelongsToBooking } = require('../storage/storage.service');
+
+// A cleaner needs to know who they are visiting and how to reach them on the
+// day — not the customer's email, referral code or internal notes.
+const CLEANER_VISIBLE_CUSTOMER = { select: { id: true, firstName: true, lastName: true, phone: true } };
+
+const ALLOWED_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic'];
 
 const router = express.Router();
 
@@ -38,6 +45,19 @@ router.use(authenticate, requireActiveCleaner);
 router.get('/my', async (req, res, next) => {
   try {
     const { from, to, status } = req.query;
+    const VALID_STATUSES = ['REQUESTED', 'CONFIRMED', 'ASSIGNED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'];
+    if (status && !VALID_STATUSES.includes(status)) {
+      const err = new Error('Invalid status filter');
+      err.status = 422;
+      throw err;
+    }
+    for (const [label, value] of [['from', from], ['to', to]]) {
+      if (value && Number.isNaN(new Date(value).getTime())) {
+        const err = new Error(`Invalid ${label} date`);
+        err.status = 422;
+        throw err;
+      }
+    }
     const where = {
       assignments: { some: { cleanerId: req.cleaner.id } },
       businessId: req.cleaner.businessId,
@@ -52,7 +72,7 @@ router.get('/my', async (req, res, next) => {
     const bookings = await prisma.booking.findMany({
       where,
       include: {
-        customer: true,
+        customer: CLEANER_VISIBLE_CUSTOMER,
         service: true,
         assignments: {
           where: { cleanerId: req.cleaner.id },
@@ -82,7 +102,7 @@ router.get('/:id', async (req, res, next) => {
         assignments: { some: { cleanerId: req.cleaner.id } },
       },
       include: {
-        customer: true,
+        customer: CLEANER_VISIBLE_CUSTOMER,
         service: { include: { addOns: true } },
         assignments: { where: { cleanerId: req.cleaner.id } },
         checklist: true,
@@ -257,9 +277,15 @@ router.post(
         throw err;
       }
       const { getSignedUploadUrl } = require('../../config/storage');
+      const contentType = req.body.contentType || 'image/jpeg';
+      if (!ALLOWED_PHOTO_TYPES.includes(contentType)) {
+        const err = new Error(`contentType must be one of ${ALLOWED_PHOTO_TYPES.join(', ')}`);
+        err.status = 422;
+        throw err;
+      }
       const safeName = (req.body.filename || 'photo.jpg').replace(/[^a-zA-Z0-9._-]/g, '_');
       const key = `businesses/${req.cleaner.businessId}/bookings/${req.params.id}/photos/${req.body.stage}/${Date.now()}-${safeName}`;
-      const uploadUrl = await getSignedUploadUrl(key, req.body.contentType || 'image/jpeg');
+      const uploadUrl = await getSignedUploadUrl(key, contentType);
       return success(res, 200, { uploadUrl, storageKey: key });
     } catch (err) {
       next(err);
@@ -289,6 +315,7 @@ router.post(
         err.status = 403;
         throw err;
       }
+      assertPhotoKeyBelongsToBooking(req.body.storageKey, req.cleaner.businessId, req.params.id);
       const photo = await prisma.jobPhoto.create({
         data: { bookingId: req.params.id, stage: req.body.stage, storageKey: req.body.storageKey },
       });

@@ -1,5 +1,9 @@
 const prisma = require('../../config/database');
 const { audit } = require('../../utils/audit');
+const { pick } = require('../../utils/pick');
+
+const SERVICE_FIELDS = ['name', 'description', 'pricingModel', 'basePriceCents', 'estimatedMinutes', 'isActive'];
+const ADDON_FIELDS = ['name', 'priceCents', 'extraMinutes'];
 
 async function listServices(businessId) {
   // Dashboard listing intentionally includes inactive services too — a
@@ -10,7 +14,7 @@ async function listServices(businessId) {
 }
 
 async function createService(businessId, payload) {
-  const created = await prisma.service.create({ data: { businessId, ...payload } });
+  const created = await prisma.service.create({ data: { ...pick(payload, SERVICE_FIELDS), businessId } });
   await audit({ businessId, action: 'SERVICE_CREATED', entityType: 'Service', entityId: created.id });
   return created;
 }
@@ -27,8 +31,9 @@ async function getService(businessId, id) {
 
 async function updateService(businessId, id, patch) {
   await getService(businessId, id);
-  const updated = await prisma.service.update({ where: { id }, data: patch });
-  await audit({ businessId, action: 'SERVICE_UPDATED', entityType: 'Service', entityId: id, metadata: patch });
+  const data = pick(patch, SERVICE_FIELDS);
+  const updated = await prisma.service.update({ where: { id }, data });
+  await audit({ businessId, action: 'SERVICE_UPDATED', entityType: 'Service', entityId: id, metadata: data });
   return updated;
 }
 
@@ -62,8 +67,9 @@ async function updateAddOn(businessId, serviceId, addOnId, patch) {
     err.status = 404;
     throw err;
   }
-  const updated = await prisma.serviceAddOn.update({ where: { id: addOnId }, data: patch });
-  await audit({ businessId, action: 'SERVICE_ADDON_UPDATED', entityType: 'ServiceAddOn', entityId: addOnId, metadata: patch });
+  const data = pick(patch, ADDON_FIELDS);
+  const updated = await prisma.serviceAddOn.update({ where: { id: addOnId }, data });
+  await audit({ businessId, action: 'SERVICE_ADDON_UPDATED', entityType: 'ServiceAddOn', entityId: addOnId, metadata: data });
   return updated;
 }
 

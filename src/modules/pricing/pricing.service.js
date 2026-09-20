@@ -1,4 +1,55 @@
+const crypto = require('crypto');
 const prisma = require('../../config/database');
+const { pick } = require('../../utils/pick');
+
+const COUPON_FIELDS = [
+  'code', 'type', 'value', 'isActive', 'appliesToServiceId',
+  'expiresAt', 'maxRedemptions', 'perCustomerLimit',
+];
+
+function unprocessable(message) {
+  const err = new Error(message);
+  err.status = 422;
+  return err;
+}
+
+/**
+ * Whitelists coupon fields and validates the ones that would otherwise let a
+ * bad row through (a PERCENT coupon over 100 makes prices negative-adjacent,
+ * a service id from another tenant leaks across the tenant boundary).
+ */
+async function sanitizeCoupon(businessId, payload, { partial }) {
+  const data = pick(payload, COUPON_FIELDS);
+
+  if ('type' in data) {
+    data.type = String(data.type).toUpperCase();
+    if (!['PERCENT', 'AMOUNT'].includes(data.type)) throw unprocessable('type must be PERCENT or AMOUNT');
+  } else if (!partial) {
+    throw unprocessable('type is required');
+  }
+
+  if ('value' in data) {
+    if (!Number.isInteger(data.value) || data.value < 0) throw unprocessable('value must be a non-negative integer');
+  } else if (!partial) {
+    throw unprocessable('value is required');
+  }
+  if (data.type === 'PERCENT' && data.value > 100) throw unprocessable('A percent coupon cannot exceed 100');
+
+  if ('code' in data) {
+    data.code = String(data.code).trim();
+    if (!data.code) throw unprocessable('code is required');
+  } else if (!partial) {
+    throw unprocessable('code is required');
+  }
+
+  if (data.appliesToServiceId) {
+    const svc = await prisma.service.findFirst({ where: { id: data.appliesToServiceId, businessId }, select: { id: true } });
+    if (!svc) throw unprocessable('appliesToServiceId does not belong to this business');
+  }
+  if ('expiresAt' in data && data.expiresAt) data.expiresAt = new Date(data.expiresAt);
+
+  return data;
+}
 
 async function getPricing(businessId) {
   let p = await prisma.businessPricing.findUnique({ where: { businessId } });
@@ -23,7 +74,8 @@ async function listCoupons(businessId) {
 }
 
 async function createCoupon(businessId, payload) {
-  return prisma.coupon.create({ data: { businessId, ...payload } });
+  const data = await sanitizeCoupon(businessId, payload, { partial: false });
+  return prisma.coupon.create({ data: { ...data, businessId } });
 }
 
 async function updateCoupon(businessId, id, payload) {
@@ -31,7 +83,8 @@ async function updateCoupon(businessId, id, payload) {
   if (!c) {
     const err = new Error('Coupon not found'); err.status = 404; throw err;
   }
-  return prisma.coupon.update({ where: { id }, data: payload });
+  const data = await sanitizeCoupon(businessId, payload, { partial: true });
+  return prisma.coupon.update({ where: { id }, data });
 }
 
 async function deleteCoupon(businessId, id) {
@@ -44,7 +97,14 @@ async function deleteCoupon(businessId, id) {
 }
 
 function generateGiftCardCode() {
-  return `GC-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+  // Codes are checkable from the public widget without authentication, so
+  // they must not be guessable: 10 chars from a 32-symbol alphabet (~50 bits)
+  // drawn from a CSPRNG rather than Math.random().
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = crypto.randomBytes(10);
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 1) out += alphabet[bytes[i] % alphabet.length];
+  return `GC-${out}`;
 }
 
 async function listGiftCards(businessId) {

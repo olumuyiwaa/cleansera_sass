@@ -2,6 +2,10 @@ const prisma = require('../../config/database');
 const { getPublicUrl, getPublicUploadUrl } = require('../../config/storage');
 const { toPublicBranding } = require('../../lib/branding');
 const crypto = require('crypto');
+const { pick } = require('../../utils/pick');
+
+const ADDRESS_FIELDS = ['label', 'line1', 'line2', 'city', 'state', 'postalCode', 'country', 'latitude', 'longitude', 'isPrimary'];
+const SERVICE_AREA_FIELDS = ['name', 'centerLat', 'centerLng', 'radiusMeters'];
 
 // ============================================================
 // FRANCHISE / MULTI-LOCATION
@@ -379,7 +383,7 @@ async function updateBranding(businessId, payload) {
 }
 
 async function addAddress(businessId, payload) {
-  return prisma.businessAddress.create({ data: { businessId, ...payload } });
+  return prisma.businessAddress.create({ data: { ...pick(payload, ADDRESS_FIELDS), businessId } });
 }
 
 async function updateAddress(businessId, id, payload) {
@@ -389,7 +393,7 @@ async function updateAddress(businessId, id, payload) {
     err.status = 404;
     throw err;
   }
-  return prisma.businessAddress.update({ where: { id }, data: payload });
+  return prisma.businessAddress.update({ where: { id }, data: pick(payload, ADDRESS_FIELDS) });
 }
 
 async function removeAddress(businessId, id) {
@@ -407,7 +411,7 @@ async function listServiceAreas(businessId) {
 }
 
 async function createServiceArea(businessId, payload) {
-  return prisma.serviceArea.create({ data: { businessId, ...payload } });
+  return prisma.serviceArea.create({ data: { ...pick(payload, SERVICE_AREA_FIELDS), businessId } });
 }
 
 async function updateServiceArea(businessId, id, payload) {
@@ -417,7 +421,7 @@ async function updateServiceArea(businessId, id, payload) {
     err.status = 404;
     throw err;
   }
-  return prisma.serviceArea.update({ where: { id }, data: payload });
+  return prisma.serviceArea.update({ where: { id }, data: pick(payload, SERVICE_AREA_FIELDS) });
 }
 
 async function deleteServiceArea(businessId, id) {
