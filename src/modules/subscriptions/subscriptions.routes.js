@@ -13,6 +13,8 @@ router.use(authenticate, scopeToBusiness);
 router.get('/plans', controller.listPlans);
 
 router.get('/', controller.getSubscription);
+// Access state (allowed / trial end / lapsed) so the dashboard can show a banner
+router.get('/access', controller.getAccess);
 // Billing is an ownership decision: managers can read the subscription but
 // cannot start, change, cancel or open the billing portal for it.
 router.post(

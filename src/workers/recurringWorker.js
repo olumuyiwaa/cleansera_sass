@@ -3,6 +3,7 @@ const logger = require('../config/logger');
 const notifications = require('../modules/notifications/notifications.service');
 const pricing = require('../lib/pricing');
 const { advanceRunDate } = require('../utils/timezone');
+const { getAccess } = require('../lib/subscriptionAccess');
 
 /**
  * How far ahead recurring visits are materialised as real bookings.
@@ -96,6 +97,16 @@ async function processSchedule(s, now, horizon, stats) {
     logger.error('Recurring schedule missing required relations, deactivating', { scheduleId: s.id });
     await prisma.recurringSchedule.update({ where: { id: s.id }, data: { status: 'CANCELLED' } });
     stats.errors += 1;
+    return;
+  }
+
+  // A business whose subscription lapsed gets no new visits generated (and no
+  // SMS/email costs). nextRunDate is left alone; past occurrences are skipped
+  // when it comes back.
+  const access = await getAccess(s.businessId);
+  if (!access.allowed) {
+    logger.info('Recurring schedule skipped: subscription not active', { scheduleId: s.id, state: access.state });
+    stats.skipped += 1;
     return;
   }
 

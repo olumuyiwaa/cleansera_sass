@@ -1,25 +1,23 @@
-const prisma = require('../config/database');
+const { getEffectivePlan } = require('./subscriptionAccess');
 const { error } = require('../utils/response');
 
 /**
  * Reads a boolean flag out of the business's active SubscriptionPlan.features
  * JSON (e.g. { autoDispatch: true, customDomain: false, reportExports: true }).
  *
- * Fails OPEN — returns true — when the business has no BusinessSubscription
- * row yet, no plan on it, or the key simply isn't present in that plan's
- * features JSON. This mirrors the existing maxCleaners check in
- * cleaners.service.js: a business mid-setup, before billing is even wired
- * up, shouldn't be blocked from using the product. The intent is to gate
- * *known* tier differences, not to lock everything down by default.
+ * A business with no subscription row is treated as being on the cheapest
+ * plan (see lib/subscriptionAccess.js) instead of getting every feature for
+ * free. Fails open only when enforcement is off, or when the key isn't
+ * present in the plan's features JSON: the intent is to gate *known* tier
+ * differences, not to lock everything down by default.
  */
 async function hasPlanFeature(businessId, featureKey) {
-  const sub = await prisma.businessSubscription.findUnique({
-    where: { businessId },
-    include: { plan: true },
-  });
-  if (!sub || !sub.plan) return true;
+  // Own plan, or - for a business still in its no-card platform trial - the
+  // cheapest plan. null only when subscription enforcement is off.
+  const plan = await getEffectivePlan(businessId);
+  if (!plan) return true;
 
-  const features = sub.plan.features || {};
+  const features = plan.features || {};
   if (!(featureKey in features)) return true;
   return features[featureKey] !== false;
 }

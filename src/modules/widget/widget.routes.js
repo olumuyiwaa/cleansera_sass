@@ -5,6 +5,7 @@ const { resolveBusinessFromHost } = require('../../middleware/resolveBusinessFro
 const { resolveBusinessFromSlug } = require('../../middleware/resolveBusinessFromSlug');
 const { widgetLimiter } = require('../../middleware/rateLimiter');
 const validate = require('../../middleware/validate');
+const { requireAcceptingBookings } = require('../../middleware/requireActiveSubscription');
 
 const bookingValidators = [
   body('firstName').trim().notEmpty(),
@@ -35,11 +36,12 @@ function widgetRoutesFor(resolveBusiness) {
   router.use(widgetLimiter, resolveBusiness);
 
   router.get('/storefront', controller.storefront);
-  router.post('/quote', [body('serviceId').notEmpty()], validate, controller.quote);
-  router.get('/slots', controller.slots);
+  router.post('/quote', requireAcceptingBookings, [body('serviceId').notEmpty()], validate, controller.quote);
+  router.get('/slots', requireAcceptingBookings, controller.slots);
   router.get('/gift-cards/:code', controller.giftCardBalance);
   router.post(
     '/waitlist',
+    requireAcceptingBookings,
     [
       body('desiredStart').isISO8601(),
       body('desiredEnd').isISO8601(),
@@ -50,7 +52,7 @@ function widgetRoutesFor(resolveBusiness) {
     validate,
     controller.joinWaitlist
   );
-  router.post('/bookings', bookingValidators, validate, controller.submitBooking);
+  router.post('/bookings', requireAcceptingBookings, bookingValidators, validate, controller.submitBooking);
 
   return router;
 }

@@ -5,6 +5,7 @@ const { audit } = require('../../utils/audit');
 const notifications = require('../notifications/notifications.service');
 const { getIo } = require('../../config/socket');
 const logger = require('../../config/logger');
+const { getEffectivePlan } = require('../../lib/subscriptionAccess');
 
 function httpError(status, message) {
   const err = new Error(message);
@@ -12,12 +13,12 @@ function httpError(status, message) {
   return err;
 }
 
-/** Plan limit on ACTIVE cleaners. Fails open only when the business has no subscription row. */
+/** Plan limit on ACTIVE cleaners. A business in its no-card trial gets the cheapest plan's limit. */
 async function assertWithinCleanerLimit(businessId) {
-  const sub = await prisma.businessSubscription.findUnique({ where: { businessId }, include: { plan: true } });
-  if (sub && sub.plan && typeof sub.plan.maxCleaners === 'number') {
+  const plan = await getEffectivePlan(businessId);
+  if (plan && typeof plan.maxCleaners === 'number') {
     const activeCount = await prisma.cleanerProfile.count({ where: { businessId, status: 'ACTIVE' } });
-    if (activeCount >= sub.plan.maxCleaners) throw httpError(402, 'Cleaner limit reached for current subscription plan');
+    if (activeCount >= plan.maxCleaners) throw httpError(402, 'Cleaner limit reached for current subscription plan');
   }
 }
 

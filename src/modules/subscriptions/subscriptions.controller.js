@@ -10,6 +10,16 @@ async function listPlans(req, res, next) {
   }
 }
 
+async function getAccess(req, res, next) {
+  try {
+    const { getAccess: compute, enforcementEnabled } = require('../../lib/subscriptionAccess');
+    const access = await compute(req.businessId);
+    return success(res, 200, { ...access, enforced: enforcementEnabled() });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function getSubscription(req, res, next) {
   try {
     const sub = await service.getSubscriptionForBusiness(req.businessId);
@@ -65,6 +75,7 @@ async function listInvoices(req, res, next) {
 }
 
 module.exports = {
+  getAccess,
   listPlans,
   getSubscription,
   updateSubscription,

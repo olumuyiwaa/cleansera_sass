@@ -1,5 +1,6 @@
 const { error } = require('../utils/response');
 const prisma = require('../config/database');
+const { requireActiveSubscription } = require('./requireActiveSubscription');
 
 /**
  * Guarantees the authenticated user is attached to a business before hitting
@@ -22,7 +23,7 @@ async function scopeToBusiness(req, res, next) {
 
   if (req.user?.globalRole === 'SUPER_ADMIN' && override) {
     req.businessId = override;
-    return next();
+    return requireActiveSubscription(req, res, next);
   }
 
   // BUSINESS_OWNER is included here too: the owner of a parent/HQ business
@@ -39,7 +40,7 @@ async function scopeToBusiness(req, res, next) {
     }
     req.businessId = location.id;
     req.orgId = req.user.businessId;
-    return next();
+    return requireActiveSubscription(req, res, next);
   }
 
   if (!req.user?.businessId) {
@@ -47,7 +48,7 @@ async function scopeToBusiness(req, res, next) {
   }
 
   req.businessId = req.user.businessId;
-  return next();
+  return requireActiveSubscription(req, res, next);
 }
 
 module.exports = { scopeToBusiness };
