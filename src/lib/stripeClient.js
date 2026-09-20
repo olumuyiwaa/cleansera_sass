@@ -31,6 +31,92 @@ async function cancelSubscription(stripeSubscriptionId) {
   return stripe.subscriptions.cancel(stripeSubscriptionId);
 }
 
+function appUrl() {
+  return process.env.APP_URL || 'http://localhost:3000';
+}
+
+/**
+ * Hosted Checkout for the platform's own subscription billing (CleanSera ->
+ * business). This is how a payment method gets attached: creating a Stripe
+ * subscription server-side for a customer with no payment method leaves it
+ * `incomplete` forever, so the subscription must be started through Checkout.
+ *
+ * - payment_method_collection 'always' so a trial converts without a second
+ *   trip to the customer.
+ * - tax_id_collection lets Dutch/EU businesses supply a BTW number, which is
+ *   what makes reverse-charge invoicing possible.
+ * - STRIPE_AUTOMATIC_TAX=true turns on Stripe Tax for the platform invoice.
+ */
+async function createSubscriptionCheckoutSession({
+  businessId,
+  planId,
+  priceId,
+  stripeCustomerId,
+  customerEmail,
+  trialDays,
+  successUrl,
+  cancelUrl,
+}) {
+  if (!process.env.STRIPE_SECRET_KEY) {
+    const err = new Error('STRIPE_SECRET_KEY is not configured');
+    err.status = 503;
+    throw err;
+  }
+  const trial = Number.isFinite(trialDays) && trialDays > 0 ? trialDays : undefined;
+
+  return stripe.checkout.sessions.create({
+    mode: 'subscription',
+    line_items: [{ price: priceId, quantity: 1 }],
+    payment_method_collection: 'always',
+    billing_address_collection: 'required',
+    tax_id_collection: { enabled: true },
+    ...(process.env.STRIPE_AUTOMATIC_TAX === 'true' ? { automatic_tax: { enabled: true } } : {}),
+    ...(stripeCustomerId
+      ? { customer: stripeCustomerId, customer_update: { address: 'auto', name: 'auto' } }
+      : { customer_email: customerEmail || undefined }),
+    subscription_data: {
+      ...(trial ? { trial_period_days: trial } : {}),
+      metadata: { businessId, planId },
+    },
+    metadata: { purpose: 'subscription', businessId, planId },
+    success_url: successUrl || `${appUrl()}/subscription?checkout=success`,
+    cancel_url: cancelUrl || `${appUrl()}/subscription?checkout=cancelled`,
+  });
+}
+
+/** Moves an existing subscription to another price, prorating the difference. */
+async function changeSubscriptionPlan(stripeSubscriptionId, priceId) {
+  const sub = await stripe.subscriptions.retrieve(stripeSubscriptionId);
+  const item = sub.items && sub.items.data && sub.items.data[0];
+  if (!item) {
+    const err = new Error('Stripe subscription has no items to change');
+    err.status = 409;
+    throw err;
+  }
+  return stripe.subscriptions.update(stripeSubscriptionId, {
+    items: [{ id: item.id, price: priceId }],
+    proration_behavior: 'create_prorations',
+    cancel_at_period_end: false,
+  });
+}
+
+/** Ends the subscription at the close of the paid period — matches the "cancel anytime, effective at period end" promise on the pricing page. */
+async function cancelSubscriptionAtPeriodEnd(stripeSubscriptionId) {
+  return stripe.subscriptions.update(stripeSubscriptionId, { cancel_at_period_end: true });
+}
+
+async function retrieveSubscription(stripeSubscriptionId) {
+  return stripe.subscriptions.retrieve(stripeSubscriptionId);
+}
+
+/** Stripe-hosted page where the business updates its card/SEPA mandate and downloads invoices. */
+async function createBillingPortalSession(stripeCustomerId, returnUrl) {
+  return stripe.billingPortal.sessions.create({
+    customer: stripeCustomerId,
+    return_url: returnUrl || `${appUrl()}/subscription`,
+  });
+}
+
 async function retrieveEvent(rawBody, sig) {
   if (!process.env.STRIPE_WEBHOOK_SECRET) return null;
   try {
@@ -366,6 +452,11 @@ module.exports = {
   createCustomerForBusiness,
   createSubscription,
   cancelSubscription,
+  createSubscriptionCheckoutSession,
+  changeSubscriptionPlan,
+  cancelSubscriptionAtPeriodEnd,
+  retrieveSubscription,
+  createBillingPortalSession,
   retrieveEvent,
   createConnectAccountAndLink,
   getConnectAccountStatus,

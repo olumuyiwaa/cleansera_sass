@@ -21,7 +21,7 @@ async function getSubscription(req, res, next) {
 
 async function updateSubscription(req, res, next) {
   try {
-    const s = await service.updateSubscriptionForBusiness(req.businessId, req.body);
+    const s = await service.updateSubscriptionForBusiness(req.businessId, { planId: req.body.planId });
     return success(res, 200, s, 'Subscription updated');
   } catch (err) {
     next(err);
@@ -30,8 +30,8 @@ async function updateSubscription(req, res, next) {
 
 async function createSubscription(req, res, next) {
   try {
-    const s = await service.createSubscriptionForBusiness(req.businessId, req.body);
-    return success(res, 201, s, 'Subscription created');
+    const result = await service.createSubscriptionForBusiness(req.businessId, { planId: req.body.planId });
+    return success(res, 201, result, 'Continue to checkout to start your subscription');
   } catch (err) {
     next(err);
   }
@@ -41,6 +41,15 @@ async function cancelSubscription(req, res, next) {
   try {
     const s = await service.cancelSubscriptionForBusiness(req.businessId);
     return success(res, 200, s, 'Subscription canceled');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function createPortalSession(req, res, next) {
+  try {
+    const result = await service.createPortalSession(req.businessId);
+    return success(res, 200, result);
   } catch (err) {
     next(err);
   }
@@ -61,5 +70,6 @@ module.exports = {
   updateSubscription,
   createSubscription,
   cancelSubscription,
+  createPortalSession,
   listInvoices,
 };

@@ -13,15 +13,18 @@ router.use(authenticate, scopeToBusiness);
 router.get('/plans', controller.listPlans);
 
 router.get('/', controller.getSubscription);
+// Billing is an ownership decision: managers can read the subscription but
+// cannot start, change, cancel or open the billing portal for it.
 router.post(
     '/',
-    requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'),
+    requireRole('BUSINESS_OWNER'),
     [body('planId').notEmpty().withMessage('planId is required')],
     validate,
     controller.createSubscription
 );
-router.put('/', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.updateSubscription);
-router.post('/cancel', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.cancelSubscription);
+router.put('/', requireRole('BUSINESS_OWNER'), [body('planId').notEmpty()], validate, controller.updateSubscription);
+router.post('/cancel', requireRole('BUSINESS_OWNER'), controller.cancelSubscription);
+router.post('/portal', requireRole('BUSINESS_OWNER'), controller.createPortalSession);
 router.get('/invoices', controller.listInvoices);
 
 module.exports = router;

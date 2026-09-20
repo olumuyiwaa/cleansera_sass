@@ -44,6 +44,10 @@ async function requestAccess(businessId, { phone }) {
   }
 
   const code = String(Math.floor(100000 + Math.random() * 900000));
+  if (process.env.NODE_ENV !== 'production') {
+    logger.info(`[DEV] Portal OTP for ${phone}: ${code}`);
+    console.log(`[DEV] Portal OTP for ${phone}: ${code}`);
+  }
   await prisma.otpCode.create({
     data: {
       userId: user.id,
