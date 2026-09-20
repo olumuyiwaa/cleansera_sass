@@ -10,7 +10,7 @@ function requireCustomerPortal(req, res, next) {
   }
   try {
     const payload = verifyAccessToken(token);
-    if (payload.scope !== 'CUSTOMER_PORTAL' || !payload.portalCustomerId) {
+    if (payload.scope !== 'CUSTOMER_PORTAL' || payload.aud !== 'customer-portal' || !payload.portalCustomerId) {
       const err = new Error('Invalid portal token');
       err.status = 401;
       return next(err);

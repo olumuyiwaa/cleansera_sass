@@ -1,7 +1,7 @@
 jest.mock('../src/config/database.js', () => ({
   booking: { findFirst: jest.fn(), update: jest.fn() },
   cleanerProfile: { findFirst: jest.fn() },
-  bookingAssignment: { create: jest.fn(), findMany: jest.fn() },
+  bookingAssignment: { create: jest.fn(), findMany: jest.fn(), findFirst: jest.fn().mockResolvedValue(null) },
   businessSubscription: { findUnique: jest.fn() },
 }));
 jest.mock('../src/utils/audit', () => ({ audit: jest.fn() }));
@@ -57,7 +57,7 @@ describe('dispatch.service.createAssignment', () => {
       expect.objectContaining({ lat: 1, lng: 2, includeEta: true })
     );
     expect(mockPrisma.bookingAssignment.create).toHaveBeenCalledWith({
-      data: { bookingId: 'bk1', cleanerId: 'cleaner-best' },
+      data: { bookingId: 'bk1', cleanerId: 'cleaner-best', isTeamLead: false },
     });
     expect(mockPrisma.booking.update).toHaveBeenCalledWith({
       where: { id: 'bk1' },

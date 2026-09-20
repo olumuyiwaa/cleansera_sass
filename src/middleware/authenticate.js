@@ -14,6 +14,9 @@ async function authenticate(req, res, next) {
     if (!token) return error(res, 401, 'Missing access token');
 
     const payload = jwt.verify(token, process.env.JWT_SECRET);
+    // Customer-portal tokens are signed with the same secret. They must never
+    // be usable as a staff/cleaner session, whatever user id they carry.
+    if (payload.scope || payload.aud) return error(res, 401, 'Invalid or expired token');
     const user = await prisma.user.findUnique({ where: { id: payload.sub } });
     if (!user || !user.isActive) return error(res, 401, 'Invalid session');
 

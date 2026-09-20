@@ -171,6 +171,14 @@ router.post('/:id/start', async (req, res, next) => {
       throw err;
     }
 
+    // Starting a finished or cancelled job used to flip it back to
+    // IN_PROGRESS.
+    if (['COMPLETED', 'CANCELLED'].includes(assignment.booking.status)) {
+      const err = new Error(`This booking is already ${assignment.booking.status.toLowerCase()}`);
+      err.status = 409;
+      throw err;
+    }
+
     if (!assignment.checkedInAt) {
       const result = await cleanersService.clockIn(
         req.cleaner.businessId,

@@ -5,6 +5,8 @@ const logger = require('../../config/logger');
 const { createBookingCheckoutSession, createAncillaryCheckoutSession, createRefund } = require('../../lib/stripeClient');
 const { computeInitialRunDate } = require('../../utils/timezone');
 const { evaluateCancellation } = require('../../lib/cancellationPolicy');
+const { amountDueCents, jobPaymentCents } = require('../../lib/paymentMath');
+const { assertCleanerFree } = require('../../lib/assignmentConflicts');
 const payroll = require('../payroll/payroll.service');
 const waitlist = require('../waitlist/waitlist.service');
 const { pick } = require('../../utils/pick');
@@ -207,27 +209,8 @@ async function assignBooking(businessId, bookingId, cleanerId, actorUserId, opti
     throw err;
   }
 
-  // Prevent overlapping assignments for the cleaner. Excludes CANCELLED
-  // bookings — otherwise a cancelled booking permanently "blocks" that
-  // cleaner's slot for reassignment, since its BookingAssignment row is
-  // never removed on cancel (matches the exclusion rescheduleBooking's own
-  // overlap check already applies below).
-  const overlap = await prisma.bookingAssignment.findFirst({
-    where: {
-      cleanerId,
-      booking: {
-        status: { not: 'CANCELLED' },
-        scheduledStart: { lte: booking.scheduledEnd },
-        scheduledEnd: { gte: booking.scheduledStart },
-      },
-    },
-    include: { booking: true },
-  });
-  if (overlap) {
-    const err = new Error('Cleaner has another booking during this time');
-    err.status = 400;
-    throw err;
-  }
+  // Same rule as dispatch: touching bookings are fine, cancelled ones never block.
+  await assertCleanerFree(cleanerId, booking.scheduledStart, booking.scheduledEnd, { excludeBookingId: bookingId });
 
   const assignment = await prisma.bookingAssignment.create({
     data: { bookingId, cleanerId, isTeamLead, earningsSplitPercent },
@@ -269,13 +252,27 @@ async function markPaymentReceived(
 
   const allowed = ['CASH', 'BANK_TRANSFER', 'INVOICE', 'OTHER'];
   const payMethod = allowed.includes(method) ? method : 'OTHER';
-  const paidAmount =
-      amountCents != null && Number.isInteger(amountCents) && amountCents >= 0
+
+  // What is still owed after any deposit, gift card and earlier part-payment.
+  const due = amountDueCents(booking);
+  const received =
+      amountCents != null && Number.isInteger(amountCents) && amountCents > 0
           ? amountCents
-          : booking.quotedPriceCents;
+          : due;
+  if (received <= 0) {
+    const err = new Error('There is nothing left to collect on this booking');
+    err.status = 409;
+    throw err;
+  }
+  // Recorded, not just audited: cancellations/refunds and reports read
+  // amountPaidCents. Previously the amount only went into the audit log and
+  // any amount at all flipped the booking to PAID.
+  const fullyPaid = received >= due;
+  const paidAmount = received;
 
   const paymentNoteParts = [
     `manual:${payMethod}`,
+    `amount:${received}`,
     reference ? `ref:${String(reference).slice(0, 120)}` : null,
     note ? `note:${String(note).slice(0, 200)}` : null,
     `by:${actorUserId}`,
@@ -285,7 +282,8 @@ async function markPaymentReceived(
   const updated = await prisma.booking.update({
     where: { id: bookingId },
     data: {
-      paymentStatus: 'PAID',
+      paymentStatus: fullyPaid ? 'PAID' : 'PARTIAL',
+      amountPaidCents: jobPaymentCents(booking) + received,
       paymentNote: [booking.paymentNote, paymentNoteParts.join(';')]
           .filter(Boolean)
           .join(' | '),
@@ -364,14 +362,15 @@ async function completeBooking(businessId, bookingId, actorUserId, options = {})
       booking.paymentStatus !== 'PAID' &&
       booking.business?.stripeChargesEnabled &&
       booking.business?.stripeConnectedAccountId &&
-      booking.quotedPriceCents > 0
+      amountDueCents(booking) > 0
   ) {
     try {
       const session = await createBookingCheckoutSession({
         bookingId: booking.id,
         businessId,
         connectedAccountId: booking.business.stripeConnectedAccountId,
-        amountCents: booking.quotedPriceCents,
+        amountCents: amountDueCents(booking),
+        currency: booking.business.currency,
         customerEmail: booking.customer?.email,
         description: `${booking.service?.name || 'Cleaning'} — ${booking.id}`,
       });
@@ -480,6 +479,18 @@ async function completeBookingByCleaner(bookingId, cleanerUserId, { lat, lng, no
         lastKnownLng: lng,
         lastKnownAt: new Date(),
       },
+    });
+  }
+
+  // `notes` was accepted by the route and dropped. Keep it with the job.
+  if (notes && String(notes).trim()) {
+    await audit({
+      businessId: cleaner.businessId,
+      actorUserId: cleanerUserId,
+      action: 'BOOKING_CLEANER_NOTE',
+      entityType: 'Booking',
+      entityId: bookingId,
+      metadata: { note: String(notes).trim().slice(0, 2000) },
     });
   }
 
@@ -634,42 +645,83 @@ async function cancelBooking(businessId, bookingId, actorUserId, reason, options
 
   // waiveFee lets staff override the policy (e.g. business-caused
   // cancellation) without touching BusinessPricing itself.
-  const evaluation = waiveFee
-    ? { feeCents: 0, refundCents: 0, alreadyPaidCents: 0, refundPaymentIntentId: null }
-    : await evaluateCancellation(businessId, booking);
+  // Waiving the fee means the customer keeps everything they paid — it does
+  // not mean nothing is refunded (the previous code returned a zero refund
+  // whenever the fee was waived, so a deposit was silently kept).
+  const evaluation = await evaluateCancellation(businessId, booking, { waiveFee });
 
-  let refund = null;
-  if (evaluation.refundCents > 0 && evaluation.refundPaymentIntentId) {
+  // Refund each Stripe payment separately: a deposit and a job payment are
+  // different PaymentIntents, and one intent cannot be refunded for more than
+  // it captured. A failure on one does not stop the others.
+  const refunds = [];
+  let refundedCents = 0;
+  let failedCents = 0;
+  for (const item of evaluation.refundPlan || []) {
     try {
-      refund = await createRefund({
-        paymentIntentId: evaluation.refundPaymentIntentId,
-        amountCents: evaluation.refundCents,
+      const r = await createRefund({
+        paymentIntentId: item.paymentIntentId,
+        amountCents: item.amountCents,
         reason: 'requested_by_customer',
       });
+      if (r) {
+        refunds.push(r);
+        refundedCents += item.amountCents;
+      }
     } catch (e) {
+      failedCents += item.amountCents;
       logger.error('cancellation refund failed', { bookingId, error: e.message });
-      // Fall through — the booking still gets cancelled; the fee/refund
-      // numbers are recorded so a human can reconcile the failed refund
-      // manually rather than the cancellation silently succeeding with no
+      // The booking still gets cancelled; the amounts are recorded below so a
+      // human can reconcile rather than the cancellation succeeding with no
       // trace of money owed.
     }
   }
+  const manualRefundCents = evaluation.manualRefundCents || 0;
+  const owedNote = [
+    failedCents > 0 ? `refund_failed:${failedCents}` : null,
+    manualRefundCents > 0 ? `refund_due_manual:${manualRefundCents}` : null,
+  ].filter(Boolean);
 
-  const updated = await prisma.booking.update({
-    where: { id: bookingId },
-    data: {
-      status: 'CANCELLED',
-      cancelReason: reason || null,
-      cancellationFeeCents: evaluation.feeCents || null,
-      ...(refund
-        ? {
-            refundedAmountCents: evaluation.refundCents,
-            refundedAt: new Date(),
-            stripeRefundId: refund.id,
-            paymentStatus: evaluation.refundCents >= evaluation.alreadyPaidCents ? 'REFUNDED' : 'PARTIAL',
-          }
-        : {}),
-    },
+  // REFUNDED only when everything paid came back and no fee was kept.
+  const refundedAll = failedCents === 0 && manualRefundCents === 0 && evaluation.refundCents >= evaluation.alreadyPaidCents;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const b = await tx.booking.update({
+      where: { id: bookingId },
+      data: {
+        status: 'CANCELLED',
+        cancelReason: reason || null,
+        cancellationFeeCents: evaluation.feeCents || null,
+        ...(refunds.length
+          ? {
+              refundedAmountCents: refundedCents,
+              refundedAt: new Date(),
+              stripeRefundId: refunds.map((r) => r.id).join(','),
+              paymentStatus: refundedAll ? 'REFUNDED' : 'PARTIAL',
+            }
+          : {}),
+        ...(owedNote.length
+          ? { paymentNote: [booking.paymentNote, `cancel:${owedNote.join(';')}`].filter(Boolean).join(' | ') }
+          : {}),
+      },
+    });
+
+    // A cancelled booking must give back what it consumed. Gift card value
+    // and coupon redemptions were taken when the booking was created and were
+    // never returned, so cancelling burned the customer's gift card.
+    if (booking.giftCardId && booking.giftCardAppliedCents > 0) {
+      const card = await tx.giftCard.findUnique({ where: { id: booking.giftCardId } });
+      if (card) {
+        const restored = Math.min(card.initialValueCents, card.balanceCents + booking.giftCardAppliedCents);
+        await tx.giftCard.update({ where: { id: card.id }, data: { balanceCents: restored } });
+      }
+    }
+    if (booking.couponId) {
+      await tx.coupon.updateMany({
+        where: { id: booking.couponId, redeemedCount: { gt: 0 } },
+        data: { redeemedCount: { decrement: 1 } },
+      });
+    }
+    return b;
   });
   await audit({
     businessId,
@@ -677,7 +729,7 @@ async function cancelBooking(businessId, bookingId, actorUserId, reason, options
     action: 'BOOKING_CANCELLED',
     entityType: 'Booking',
     entityId: bookingId,
-    metadata: { reason, feeCents: evaluation.feeCents, refundCents: refund ? evaluation.refundCents : 0 },
+    metadata: { reason, feeCents: evaluation.feeCents, refundCents: refundedCents, refundFailedCents: failedCents, manualRefundDueCents: manualRefundCents },
   });
   try {
     await notifications.notifyBookingCancelled(businessId, updated);
@@ -746,17 +798,21 @@ async function rescheduleBooking(businessId, bookingId, actorUserId, { scheduled
 }
 
 async function updatePaymentStatus(businessId, bookingId, actorUserId, { paymentStatus, paymentNote }) {
-  await getBookingById(businessId, bookingId);
+  const existing = await getBookingById(businessId, bookingId);
   const allowed = ['UNPAID', 'PAID', 'PARTIAL', 'REFUNDED'];
   if (!allowed.includes(paymentStatus)) {
     const err = new Error(`paymentStatus must be one of ${allowed.join(', ')}`);
     err.status = 422;
     throw err;
   }
-  const updated = await prisma.booking.update({
-    where: { id: bookingId },
-    data: { paymentStatus, paymentNote: paymentNote || null },
-  });
+  const data = { paymentStatus, paymentNote: paymentNote || null };
+  // Marking PAID by hand means the amount that was due has been received.
+  // Leaving amountPaidCents empty made later refund/cancellation maths guess.
+  if (paymentStatus === 'PAID' && existing.amountPaidCents == null) {
+    data.amountPaidCents = amountDueCents(existing);
+  }
+  if (paymentStatus === 'UNPAID') data.amountPaidCents = null;
+  const updated = await prisma.booking.update({ where: { id: bookingId }, data });
   await audit({ businessId, actorUserId, action: 'BOOKING_PAYMENT_UPDATED', entityType: 'Booking', entityId: bookingId, metadata: { paymentStatus, paymentNote } });
   return updated;
 }
@@ -764,6 +820,15 @@ async function updatePaymentStatus(businessId, bookingId, actorUserId, { payment
 // Override completeBooking to request review after completion
 async function completeBookingWithReview(businessId, bookingId, actorUserId) {
   const booking = await getBookingById(businessId, bookingId);
+  // The staff path had none of the guards the shared completeBooking() has:
+  // it could complete a cancelled booking (generating payroll for it) and a
+  // second call re-sent the review request and payment link.
+  if (booking.status === 'CANCELLED') {
+    const err = new Error('Cannot complete a cancelled booking');
+    err.status = 422;
+    throw err;
+  }
+  if (booking.status === 'COMPLETED') return booking;
   const updated = await prisma.booking.update({
     where: { id: bookingId },
     data: { status: 'COMPLETED' },
@@ -811,7 +876,7 @@ async function completeBookingWithReview(businessId, bookingId, actorUserId) {
   return updated;
 }
 
-async function createPaymentLink(businessId, bookingId, actorUserId, { successUrl, cancelUrl, currency } = {}) {
+async function createPaymentLink(businessId, bookingId, actorUserId, { successUrl, cancelUrl } = {}) {
   const booking = await prisma.booking.findFirst({
     where: { id: bookingId, businessId },
     include: { customer: true, service: true },
@@ -832,9 +897,20 @@ async function createPaymentLink(businessId, bookingId, actorUserId, { successUr
     throw err;
   }
 
+  // Charge what is still owed, not the full quote: a deposit already paid, a
+  // gift card and earlier part-payments all reduce it. Charging the full
+  // quote made customers pay the deposit twice.
+  const dueCents = amountDueCents(booking);
+  if (dueCents <= 0) {
+    await prisma.booking.update({ where: { id: bookingId }, data: { paymentStatus: 'PAID' } });
+    const err = new Error('Nothing is left to pay on this booking');
+    err.status = 409;
+    throw err;
+  }
+
   const business = await prisma.business.findUnique({
     where: { id: businessId },
-    select: { stripeConnectedAccountId: true, stripeChargesEnabled: true },
+    select: { stripeConnectedAccountId: true, stripeChargesEnabled: true, currency: true },
   });
   if (!business?.stripeChargesEnabled || !business?.stripeConnectedAccountId) {
     const err = new Error(
@@ -848,8 +924,10 @@ async function createPaymentLink(businessId, bookingId, actorUserId, { successUr
     bookingId: booking.id,
     businessId,
     connectedAccountId: business.stripeConnectedAccountId,
-    amountCents: booking.quotedPriceCents,
-    currency: currency || process.env.DEFAULT_CURRENCY || 'usd',
+    amountCents: dueCents,
+    // The business's own currency. A client-supplied `currency` used to be
+    // honoured here, letting a caller bill in an unintended currency.
+    currency: business.currency,
     customerEmail: booking.customer?.email || undefined,
     successUrl,
     cancelUrl,

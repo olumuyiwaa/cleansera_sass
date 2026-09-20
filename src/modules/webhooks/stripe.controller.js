@@ -185,7 +185,9 @@ async function handle(req, res) {
               paymentStatus: 'PAID',
               stripeCheckoutSessionId: obj.id,
               stripePaymentIntentId: paymentIntentId,
-              amountPaidCents: obj.amount_total ?? booking.quotedPriceCents,
+              // Additive: part of the balance may already have been recorded by
+              // hand (cash/bank transfer). The link only charges what was still due.
+              amountPaidCents: (booking.amountPaidCents || 0) + (obj.amount_total ?? 0),
               paymentNote: `stripe_session:${obj.id};paid_at:${new Date().toISOString()}`,
             },
           });

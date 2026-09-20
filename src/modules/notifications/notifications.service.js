@@ -2,7 +2,20 @@ const prisma = require('../../config/database');
 const { getIo } = require('../../config/socket');
 const logger = require('../../config/logger');
 const notificationClient = require('../../lib/notificationClient');
-const { v4: uuidv4 } = require('uuid');
+const { hashToken, randomToken } = require('../../utils/tokens');
+const { formatDateTime } = require('../../utils/format');
+
+// Business timezones change rarely; a short cache avoids a query per message.
+const tzCache = new Map();
+async function when(businessId, date) {
+  let entry = tzCache.get(businessId);
+  if (!entry || entry.expires < Date.now()) {
+    const biz = await prisma.business.findUnique({ where: { id: businessId }, select: { timezone: true } });
+    entry = { tz: (biz && biz.timezone) || 'Europe/Amsterdam', expires: Date.now() + 5 * 60 * 1000 };
+    tzCache.set(businessId, entry);
+  }
+  return formatDateTime(date, { timeZone: entry.tz });
+}
 
 // Invite links live longer than a forgot-password link (7 days vs 1 hour) —
 // the recipient didn't ask for this and may not check email right away.
@@ -15,9 +28,9 @@ const INVITE_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 7;
  * "set your password via a link" is the same operation either way.
  */
 async function sendInvite(businessId, userId, { email, phone }) {
-  const token = uuidv4();
+  const token = randomToken();
   const expiresAt = new Date(Date.now() + INVITE_TOKEN_TTL_MS);
-  await prisma.passwordReset.create({ data: { userId, token, expiresAt } });
+  await prisma.passwordReset.create({ data: { userId, token: hashToken(token), expiresAt } });
 
   const inviteUrl = `${process.env.APP_URL || 'https://app.cleansera.example'}/reset-password?token=${token}`;
 
@@ -55,7 +68,7 @@ async function sendInvite(businessId, userId, { email, phone }) {
 async function notifyBookingCreated(businessId, booking) {
   const members = await prisma.businessMember.findMany({ where: { businessId, isActive: true } });
   const title = 'New booking request';
-  const body = `Booking requested for ${booking.scheduledStart}`;
+  const body = `Booking requested for ${await when(businessId, booking.scheduledStart)}`;
 
   const created = [];
   for (const m of members) {
@@ -74,7 +87,7 @@ async function notifyBookingCreated(businessId, booking) {
 
 async function sendCustomerBookingConfirmation(businessId, booking, customer) {
   const title = 'Your booking request was received';
-  const text = `Thanks ${customer.firstName || ''}, we received your booking for ${booking.scheduledStart}. We'll notify you when it's confirmed.`;
+  const text = `Thanks ${customer.firstName || ''}, we received your booking for ${await when(businessId, booking.scheduledStart)}. We'll notify you when it's confirmed.`;
   try {
     if (customer.email) await notificationClient.sendEmail({ to: customer.email, subject: title, text });
     if (customer.phone) await notificationClient.sendSms({ to: customer.phone, body: text });
@@ -85,13 +98,13 @@ async function sendCustomerBookingConfirmation(businessId, booking, customer) {
 
 async function notifyCleanerAssigned(businessId, booking, cleanerUserId) {
   const title = 'You have a new assignment';
-  const body = `You have been assigned to booking ${booking.id} at ${booking.scheduledStart}`;
+  const body = `You have been assigned to booking ${booking.id} at ${await when(businessId, booking.scheduledStart)}`;
   try {
     const n = await prisma.notification.create({ data: { businessId, recipientUserId: cleanerUserId, type: 'ASSIGNMENT', title, body } });
     try { getIo().to(`user:${cleanerUserId}`).emit('assignment', { booking, notification: n }); } catch (e) { /* ignore */ }
     await pushToCleanerByUserId(cleanerUserId, {
       title: 'New job assigned',
-      body: `You've been assigned a new job on ${new Date(booking.scheduledStart).toLocaleString()}.`,
+      body: `You've been assigned a new job on ${await when(businessId, booking.scheduledStart)}.`,
       data: { type: 'ASSIGNMENT', bookingId: booking.id },
     });
     return n;
@@ -156,6 +169,7 @@ async function notifyOnMyWay(business, booking, customer) {
 }
 
 module.exports.notifyOnMyWay = notifyOnMyWay;
+module.exports.notifyMembers = notifyMembers;
 
 async function notifyMembers(businessId, type, title, body, extraEmit) {
   const members = await prisma.businessMember.findMany({ where: { businessId, isActive: true } });
@@ -180,7 +194,7 @@ async function notifyBookingCancelled(businessId, booking) {
       businessId,
       'BOOKING_CANCELLED',
       'Booking cancelled',
-      `Booking ${booking.id} scheduled for ${booking.scheduledStart} was cancelled.`,
+      `Booking ${booking.id} scheduled for ${await when(businessId, booking.scheduledStart)} was cancelled.`,
       { event: 'booking_cancelled', payload: { booking } }
   );
 }
@@ -190,7 +204,7 @@ async function notifyBookingRescheduled(businessId, booking) {
       businessId,
       'BOOKING_RESCHEDULED',
       'Booking rescheduled',
-      `Booking ${booking.id} moved to ${booking.scheduledStart}.`,
+      `Booking ${booking.id} moved to ${await when(businessId, booking.scheduledStart)}.`,
       { event: 'booking_rescheduled', payload: { booking } }
   );
 }
@@ -210,7 +224,7 @@ async function requestReview(businessId, booking, customer) {
 
 async function sendBookingReminder(businessId, booking, customer) {
   const title = 'Upcoming cleaning reminder';
-  const text = `Hi ${customer?.firstName || ''}, this is a reminder that your cleaning is scheduled for ${booking.scheduledStart}.`;
+  const text = `Hi ${customer?.firstName || ''}, this is a reminder that your cleaning is scheduled for ${await when(businessId, booking.scheduledStart)}.`;
   try {
     if (customer?.email) await notificationClient.sendEmail({ to: customer.email, subject: title, text });
     if (customer?.phone) await notificationClient.sendSms({ to: customer.phone, body: text });
@@ -223,7 +237,7 @@ async function sendBookingReminder(businessId, booking, customer) {
       businessId,
       'REMINDER',
       'Reminder sent',
-      `Reminder sent for booking ${booking.id}, scheduled ${booking.scheduledStart}.`
+      `Reminder sent for booking ${booking.id}, scheduled ${await when(businessId, booking.scheduledStart)}.`
   );
 }
 

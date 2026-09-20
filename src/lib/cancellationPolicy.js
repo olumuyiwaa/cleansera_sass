@@ -1,4 +1,5 @@
 const prisma = require('../config/database');
+const { paidSoFarCents, buildRefundPlan } = require('./paymentMath');
 
 /**
  * Resolves what a cancellation of `booking` should cost right now, and how
@@ -14,16 +15,16 @@ const prisma = require('../config/database');
  * result (see bookings.service.cancelBooking and
  * customerPortal.service.cancelMyBooking).
  */
-async function evaluateCancellation(businessId, booking, { now = new Date() } = {}) {
+async function evaluateCancellation(businessId, booking, { now = new Date(), waiveFee = false } = {}) {
   const pricing = await prisma.businessPricing.findUnique({ where: { businessId } });
 
   const hoursUntilStart = (new Date(booking.scheduledStart).getTime() - now.getTime()) / 3600000;
 
-  const alreadyPaidCents = (booking.depositPaidAt ? booking.depositRequiredCents || 0 : 0)
-    + (booking.paymentStatus === 'PAID' ? booking.amountPaidCents || booking.quotedPriceCents || 0 : 0);
+  // Deposit + job payment(s), including part-payments recorded by hand.
+  const alreadyPaidCents = paidSoFarCents(booking);
 
   const noPolicy = !pricing || pricing.cancellationWindowHours == null;
-  const withinFreeWindow = noPolicy || hoursUntilStart >= pricing.cancellationWindowHours;
+  const withinFreeWindow = waiveFee || noPolicy || hoursUntilStart >= pricing.cancellationWindowHours;
 
   let feeCents = 0;
   if (!withinFreeWindow) {
@@ -38,6 +39,7 @@ async function evaluateCancellation(businessId, booking, { now = new Date() } = 
   }
 
   const refundCents = Math.max(alreadyPaidCents - feeCents, 0);
+  const refundPlan = buildRefundPlan(booking, refundCents);
 
   return {
     hoursUntilStart,
@@ -45,8 +47,13 @@ async function evaluateCancellation(businessId, booking, { now = new Date() } = 
     alreadyPaidCents,
     feeCents,
     refundCents,
-    // Which payment intent to refund against, preferring the job payment
-    // over the deposit since it's usually the larger (or only) charge.
+    // One entry per Stripe PaymentIntent to refund, each within what that
+    // intent actually captured (deposit and job payment are separate charges).
+    refundPlan: refundPlan.items,
+    // The part paid outside Stripe (cash / bank transfer): the business has
+    // to return this itself.
+    manualRefundCents: refundPlan.manualCents,
+    // Kept for callers that only handle a single intent.
     refundPaymentIntentId: booking.stripePaymentIntentId || booking.stripeDepositPaymentIntentId || null,
   };
 }

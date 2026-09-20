@@ -19,6 +19,33 @@ async function onboard(req, res, next) {
   }
 }
 
+async function suspend(req, res, next) {
+  try {
+    const profile = await service.suspendCleaner(req.businessId, req.user.id, req.params.id, req.body.reason);
+    return success(res, 200, profile, 'Cleaner suspended');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function reactivate(req, res, next) {
+  try {
+    const profile = await service.reactivateCleaner(req.businessId, req.user.id, req.params.id);
+    return success(res, 200, profile, 'Cleaner reactivated');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function upcomingJobs(req, res, next) {
+  try {
+    const jobs = await service.listUpcomingJobs(req.businessId, req.params.id);
+    return success(res, 200, jobs);
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function offboard(req, res, next) {
   try {
     const profile = await service.offboardCleaner(req.businessId, req.user.id, req.params.id, req.body.reason);
@@ -69,4 +96,4 @@ async function performance(req, res, next) {
   }
 }
 
-module.exports = { list, onboard, offboard, updateAvailability, clockIn, clockOut, performance };
+module.exports = { list, onboard, offboard, suspend, reactivate, upcomingJobs, updateAvailability, clockIn, clockOut, performance };

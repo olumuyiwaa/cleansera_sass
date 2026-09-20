@@ -2,6 +2,25 @@ const Stripe = require('stripe');
 const prisma = require('../config/database');
 const logger = require('../config/logger');
 
+function defaultCurrency() {
+  return (process.env.DEFAULT_CURRENCY || 'eur').toLowerCase();
+}
+
+// Payment methods offered at checkout. iDEAL is the dominant online payment
+// method in the Netherlands and only works in EUR; it must also be switched on
+// in the platform's Stripe payment-method settings. Override with
+// CHECKOUT_PAYMENT_METHODS (comma separated, e.g. "card,ideal,bancontact").
+const EUR_ONLY_METHODS = ['ideal', 'bancontact', 'sepa_debit', 'eps', 'p24'];
+function checkoutPaymentMethods(currency) {
+  const configured = (process.env.CHECKOUT_PAYMENT_METHODS || 'card,ideal')
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
+  const isEur = (currency || defaultCurrency()).toLowerCase() === 'eur';
+  const methods = isEur ? configured : configured.filter((m) => !EUR_ONLY_METHODS.includes(m));
+  return methods.length ? methods : ['card'];
+}
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', { apiVersion: '2022-11-15' });
 
 async function createCustomerForBusiness(businessId, { email, phone } = {}) {
@@ -151,7 +170,12 @@ async function createConnectAccountAndLink(business, { refreshUrl, returnUrl }) 
   if (!accountId) {
     const account = await stripe.accounts.create({
       type: 'express',
-      business_type: 'company',
+      // business_type is intentionally not set: many small cleaning
+      // businesses are sole proprietors (individual), and forcing 'company'
+      // pushes them through the wrong verification. Stripe's hosted
+      // onboarding asks. PLATFORM_COUNTRY (ISO code, e.g. NL) sets the
+      // account country; when unset Stripe uses the platform's country.
+      ...(process.env.PLATFORM_COUNTRY ? { country: process.env.PLATFORM_COUNTRY } : {}),
       business_profile: {
         name: business.name,
         url: business.customDomain ? `https://${business.customDomain}` : undefined,
@@ -248,7 +272,7 @@ async function payCleanerTransfer({
   businessConnectedAccountId,
   cleanerConnectedAccountId,
   amountCents,
-  currency = 'usd',
+  currency = defaultCurrency(),
   payoutId,
   description,
 }) {
@@ -277,12 +301,16 @@ async function payCleanerTransfer({
     const transfer = await stripe.transfers.create(
       {
         amount: amountCents,
-        currency: (currency || 'usd').toLowerCase(),
+        currency: (currency || defaultCurrency()).toLowerCase(),
         destination: cleanerConnectedAccountId,
         description: description || `Cleaner payout ${payoutId || ''}`.trim(),
         metadata: { payoutId: payoutId || '' },
       },
-      { stripeAccount: businessConnectedAccountId }
+      {
+        stripeAccount: businessConnectedAccountId,
+        // A double click or a retry must not pay the cleaner twice.
+        ...(payoutId ? { idempotencyKey: `payout_${payoutId}` } : {}),
+      }
     );
     return transfer;
   } catch (err) {
@@ -309,7 +337,7 @@ async function createBookingCheckoutSession({
   businessId,
   connectedAccountId,
   amountCents,
-  currency = 'usd',
+  currency = defaultCurrency(),
   customerEmail,
   successUrl,
   cancelUrl,
@@ -335,11 +363,11 @@ async function createBookingCheckoutSession({
 
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
-    payment_method_types: ['card'],
+    payment_method_types: checkoutPaymentMethods(currency),
     line_items: [
       {
         price_data: {
-          currency: (currency || 'usd').toLowerCase(),
+          currency: (currency || defaultCurrency()).toLowerCase(),
           product_data: {
             name: description || `Cleaning booking ${bookingId}`,
           },
@@ -381,7 +409,7 @@ async function createAncillaryCheckoutSession({
   businessId,
   connectedAccountId,
   amountCents,
-  currency = 'usd',
+  currency = defaultCurrency(),
   customerEmail,
   successUrl,
   cancelUrl,
@@ -408,11 +436,11 @@ async function createAncillaryCheckoutSession({
 
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
-    payment_method_types: ['card'],
+    payment_method_types: checkoutPaymentMethods(currency),
     line_items: [
       {
         price_data: {
-          currency: (currency || 'usd').toLowerCase(),
+          currency: (currency || defaultCurrency()).toLowerCase(),
           product_data: { name: description || `Cleaning ${purpose} ${bookingId}` },
           unit_amount: amountCents,
         },
@@ -445,6 +473,12 @@ async function createRefund({ paymentIntentId, amountCents, reason }) {
     payment_intent: paymentIntentId,
     ...(amountCents != null ? { amount: amountCents } : {}),
     reason: reason || 'requested_by_customer',
+    // These are destination charges: the money moved to the business's
+    // connected account. Without reverse_transfer the refund is paid out of
+    // the platform's balance and the business keeps the funds, so every
+    // refund silently costs CleanSera money.
+    reverse_transfer: true,
+    ...(getApplicationFeeBps() > 0 ? { refund_application_fee: true } : {}),
   });
 }
 

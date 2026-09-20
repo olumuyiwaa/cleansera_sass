@@ -11,6 +11,7 @@ async function listDispatchItems(businessId) {
   });
 }
 
+const { assertCleanerFree } = require('../../lib/assignmentConflicts');
 const scheduler = require('../../lib/scheduler');
 
 async function createAssignment(businessId, bookingId, cleanerId, actorUserId, options = {}) {
@@ -72,6 +73,10 @@ async function createAssignment(businessId, bookingId, cleanerId, actorUserId, o
       workload: top.workload,
     });
   }
+
+  // Manual picks had no conflict check at all, so two dispatchers could put
+  // one cleaner on overlapping jobs.
+  await assertCleanerFree(chosenCleaner, booking.scheduledStart, booking.scheduledEnd, { excludeBookingId: bookingId });
 
   const assignment = await prisma.bookingAssignment.create({
     data: { bookingId, cleanerId: chosenCleaner, isTeamLead, earningsSplitPercent },

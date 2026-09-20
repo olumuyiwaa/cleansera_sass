@@ -129,7 +129,7 @@ async function verifyEnable2FA(req, res, next) {
 
 async function disable2FA(req, res, next) {
   try {
-    await authService.disable2FA(req.user.id);
+    await authService.disable2FA(req.user.id, { password: req.body.password, code: req.body.code });
     return success(res, 200, null, '2FA disabled');
   } catch (err) {
     next(err);

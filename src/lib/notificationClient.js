@@ -26,6 +26,10 @@ if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
   twClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 }
 
+// .env.example documents TWILIO_FROM_NUMBER while the code read TWILIO_FROM, so
+// following the example left SMS silently disabled. Accept both.
+const TWILIO_FROM = () => process.env.TWILIO_FROM || process.env.TWILIO_FROM_NUMBER;
+
 if (process.env.SENDGRID_API_KEY) {
   sendgrid.setApiKey(process.env.SENDGRID_API_KEY);
 }
@@ -37,9 +41,19 @@ if (process.env.SENDGRID_API_KEY) {
 // in any deployment that hasn't wired push up yet.
 let fcmApp;
 try {
-  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+  // Either one JSON blob, or the three separate variables (the form
+  // .env.example documented but the code never read).
+  const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
+    : process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY
+      ? {
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        }
+      : null;
+  if (serviceAccount) {
     const admin = require('firebase-admin');
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
     fcmApp = admin.apps.length
       ? admin.app()
       : admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
@@ -53,7 +67,9 @@ async function _sendEmailNow({ to, subject, text, html, from }) {
   from = from || process.env.EMAIL_FROM || 'no-reply@cleansera.example';
   if (process.env.SENDGRID_API_KEY) {
     try {
-      return sendgrid.send({ to, from, subject, text, html });
+      // await, so a SendGrid failure is caught here and falls through to SMTP
+      // (returning the bare promise skipped the catch entirely).
+      return await sendgrid.send({ to, from, subject, text, html });
     } catch (e) {
       logger.error('sendGrid send failed, falling back to SMTP', e);
     }
@@ -68,12 +84,12 @@ async function _sendEmailNow({ to, subject, text, html, from }) {
 }
 
 async function _sendSmsNow({ to, body }) {
-  if (!twClient || !process.env.TWILIO_FROM) {
+  if (!twClient || !TWILIO_FROM()) {
     logger.info('sendSms fallback (no Twilio):', { to, body });
     return Promise.resolve();
   }
 
-  return twClient.messages.create({ body, from: process.env.TWILIO_FROM, to });
+  return twClient.messages.create({ body, from: TWILIO_FROM(), to });
 }
 
 /**

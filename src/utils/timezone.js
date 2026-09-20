@@ -88,4 +88,4 @@ function advanceRunDate(fromDate, frequency, startTime, timeZone = 'UTC') {
   return zonedWallTimeToUtc(parts.year, parts.month, parts.day + dayOffset, hh, mm || 0, timeZone);
 }
 
-module.exports = { computeInitialRunDate, advanceRunDate, getZonedParts };
+module.exports = { computeInitialRunDate, advanceRunDate, getZonedParts, zonedWallTimeToUtc, getTimezoneOffsetMinutes };

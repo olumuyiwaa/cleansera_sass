@@ -144,6 +144,9 @@ model Business {
   stripeConnectOnboarded     Boolean                    @default(false)
   stripeChargesEnabled       Boolean                    @default(false)
   stripePayoutsEnabled       Boolean                    @default(false)
+  // ISO 4217, lower-case. Every customer-facing amount for this business
+  // (checkout, deposits, tips, payouts) is charged in this currency.
+  currency                   String                     @default("eur")
   preferredPaymentCollection PreferredPaymentCollection @default(BOTH)
   offlinePaymentInstructions String?                    @db.Text
 
@@ -859,7 +862,8 @@ model Booking {
   addressLine1            String
   addressLine2            String?
   city                    String
-  state                   String
+  state                   String                  @default("")
+  postalCode              String?
   latitude                Float?
   longitude               Float?
   // Job-site info for this specific visit — copied from CustomerAddress at
@@ -873,6 +877,13 @@ model Booking {
   parkingInstructions     String?
   petNotes                String?
   specialInstructions     String?
+
+  // What the customer chose in the booking form, frozen at booking time so
+  // the business and the cleaner can see it and later price/catalogue edits
+  // do not rewrite history. addOns: [{id,name,priceCents,extraMinutes}];
+  // homeDetails: {rooms,bathrooms,sqft,frequency}.
+  addOns                  Json?
+  homeDetails             Json?
   scheduledStart          DateTime
   scheduledEnd            DateTime
   status                  BookingStatus      @default(REQUESTED)

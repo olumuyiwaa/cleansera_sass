@@ -3,6 +3,23 @@ const crypto = require('crypto');
 const prisma = require('../../config/database');
 const { audit } = require('../../utils/audit');
 const notifications = require('../notifications/notifications.service');
+const { getIo } = require('../../config/socket');
+const logger = require('../../config/logger');
+
+function httpError(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+/** Plan limit on ACTIVE cleaners. Fails open only when the business has no subscription row. */
+async function assertWithinCleanerLimit(businessId) {
+  const sub = await prisma.businessSubscription.findUnique({ where: { businessId }, include: { plan: true } });
+  if (sub && sub.plan && typeof sub.plan.maxCleaners === 'number') {
+    const activeCount = await prisma.cleanerProfile.count({ where: { businessId, status: 'ACTIVE' } });
+    if (activeCount >= sub.plan.maxCleaners) throw httpError(402, 'Cleaner limit reached for current subscription plan');
+  }
+}
 
 /**
  * Onboards a cleaner into a business. If no User exists for the given email,
@@ -11,6 +28,11 @@ const notifications = require('../notifications/notifications.service');
  * sendInvite emails/texts to them, which they use to set their own password.
  */
 async function onboardCleaner(businessId, actorUserId, { firstName, lastName, email, phone, hireDate }) {
+  // Check the plan limit before any side effect. It used to run after the user
+  // row was created and the invite email/SMS sent, so hitting the limit still
+  // created an account and mailed the person an invite.
+  await assertWithinCleanerLimit(businessId);
+
   let user = await prisma.user.findUnique({ where: { email } });
 
   if (!user) {
@@ -39,17 +61,6 @@ async function onboardCleaner(businessId, actorUserId, { firstName, lastName, em
     const err = new Error('This person already has a cleaner profile at this business');
     err.status = 409;
     throw err;
-  }
-
-  // Enforce subscription plan limits (maxCleaners) when onboarding
-  const sub = await prisma.businessSubscription.findUnique({ where: { businessId } , include: { plan: true } });
-  if (sub && sub.plan && typeof sub.plan.maxCleaners === 'number') {
-    const activeCount = await prisma.cleanerProfile.count({ where: { businessId, status: 'ACTIVE' } });
-    if (activeCount >= sub.plan.maxCleaners) {
-      const err = new Error('Cleaner limit reached for current subscription plan');
-      err.status = 402;
-      throw err;
-    }
   }
 
   const profile = existingProfile
@@ -86,28 +97,137 @@ async function onboardCleaner(businessId, actorUserId, { firstName, lastName, em
  * Offboards a cleaner. Does not delete the profile — keeps history for past
  * bookings/reviews intact, just marks the relationship ended.
  */
-async function offboardCleaner(businessId, actorUserId, cleanerId, reason) {
-  const profile = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId } });
-  if (!profile) {
-    const err = new Error('Cleaner not found for this business');
-    err.status = 404;
-    throw err;
-  }
+const OPEN_JOB_STATUSES = ['REQUESTED', 'CONFIRMED', 'ASSIGNED'];
 
-  const updated = await prisma.cleanerProfile.update({
-    where: { id: cleanerId },
-    data: { status: 'OFFBOARDED', offboardedAt: new Date(), offboardedReason: reason || null },
+/** Future jobs this cleaner is assigned to and has not started. */
+async function listUpcomingJobs(businessId, cleanerId) {
+  const profile = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId } });
+  if (!profile) throw httpError(404, 'Cleaner not found for this business');
+  return prisma.bookingAssignment.findMany({
+    where: {
+      cleanerId,
+      checkedInAt: null,
+      booking: { businessId, status: { in: OPEN_JOB_STATUSES }, scheduledStart: { gte: new Date() } },
+    },
+    include: {
+      booking: {
+        select: { id: true, status: true, scheduledStart: true, scheduledEnd: true, addressLine1: true, city: true },
+      },
+    },
+    orderBy: { booking: { scheduledStart: 'asc' } },
   });
+}
+
+/**
+ * Takes a cleaner out of service (offboard or suspend) and cleans up what
+ * that leaves behind. Offboarding used to flip a status and stop there:
+ * upcoming jobs stayed assigned to someone who could no longer open the app
+ * (so customers got no-shows), device tokens kept receiving pushes, and any
+ * open realtime connection stayed alive. Now, in one transaction, the
+ * cleaner's not-yet-started future jobs are unassigned (bookings left with no
+ * cleaner go back to CONFIRMED), push tokens are removed, and their sessions
+ * for this business are ended; managers are told which jobs need a new cleaner.
+ */
+async function releaseCleaner(businessId, actorUserId, cleanerId, { status, reason, action }) {
+  const profile = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId } });
+  if (!profile) throw httpError(404, 'Cleaner not found for this business');
+  if (profile.status === status) return { profile, unassignedBookingIds: [] };
+
+  const now = new Date();
+  const unassignedBookingIds = [];
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const upcoming = await tx.bookingAssignment.findMany({
+      where: {
+        cleanerId,
+        checkedInAt: null,
+        booking: { businessId, status: { in: OPEN_JOB_STATUSES }, scheduledStart: { gte: now } },
+      },
+      include: { booking: { select: { id: true, status: true } } },
+    });
+    if (upcoming.length) {
+      await tx.bookingAssignment.deleteMany({ where: { id: { in: upcoming.map((a) => a.id) } } });
+      for (const a of upcoming) {
+        const remaining = await tx.bookingAssignment.count({ where: { bookingId: a.bookingId } });
+        if (remaining === 0 && a.booking.status === 'ASSIGNED') {
+          await tx.booking.update({ where: { id: a.bookingId }, data: { status: 'CONFIRMED' } });
+        }
+        unassignedBookingIds.push(a.bookingId);
+      }
+    }
+
+    const p = await tx.cleanerProfile.update({
+      where: { id: cleanerId },
+      data:
+        status === 'OFFBOARDED'
+          ? { status, offboardedAt: now, offboardedReason: reason || null }
+          : { status },
+    });
+    await tx.cleanerDeviceToken.deleteMany({ where: { cleanerId } });
+    await tx.session.deleteMany({ where: { userId: profile.userId, businessId } });
+    return p;
+  });
+
+  // Close live connections; the socket handshake only checks the token once,
+  // so an open socket would otherwise keep receiving business events.
+  try {
+    getIo().in(`user:${profile.userId}`).disconnectSockets(true);
+  } catch (e) {
+    logger.debug('socket disconnect skipped', { error: e.message });
+  }
 
   await audit({
     businessId,
     actorUserId,
-    action: 'CLEANER_OFFBOARDED',
+    action,
     entityType: 'CleanerProfile',
     entityId: cleanerId,
-    metadata: { reason },
+    metadata: { reason, unassignedBookingIds },
   });
 
+  if (unassignedBookingIds.length && notifications.notifyMembers) {
+    try {
+      await notifications.notifyMembers(
+        businessId,
+        'JOBS_NEED_REASSIGNMENT',
+        'Jobs need a new cleaner',
+        `${unassignedBookingIds.length} upcoming job(s) were unassigned when a cleaner left. Assign them to someone else.`
+      );
+    } catch (e) {
+      logger.error('failed to notify managers about unassigned jobs', { error: e.message });
+    }
+  }
+
+  return { profile: updated, unassignedBookingIds };
+}
+
+async function offboardCleaner(businessId, actorUserId, cleanerId, reason) {
+  const { profile, unassignedBookingIds } = await releaseCleaner(businessId, actorUserId, cleanerId, {
+    status: 'OFFBOARDED',
+    reason,
+    action: 'CLEANER_OFFBOARDED',
+  });
+  return { ...profile, unassignedBookingIds };
+}
+
+async function suspendCleaner(businessId, actorUserId, cleanerId, reason) {
+  const existing = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId } });
+  if (existing && existing.status !== 'ACTIVE') throw httpError(409, `Only active cleaners can be suspended (this one is ${existing.status})`);
+  const { profile, unassignedBookingIds } = await releaseCleaner(businessId, actorUserId, cleanerId, {
+    status: 'SUSPENDED',
+    reason,
+    action: 'CLEANER_SUSPENDED',
+  });
+  return { ...profile, unassignedBookingIds };
+}
+
+async function reactivateCleaner(businessId, actorUserId, cleanerId) {
+  const profile = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId } });
+  if (!profile) throw httpError(404, 'Cleaner not found for this business');
+  if (profile.status !== 'SUSPENDED') throw httpError(409, 'Only suspended cleaners can be reactivated');
+  await assertWithinCleanerLimit(businessId);
+  const updated = await prisma.cleanerProfile.update({ where: { id: cleanerId }, data: { status: 'ACTIVE' } });
+  await audit({ businessId, actorUserId, action: 'CLEANER_REACTIVATED', entityType: 'CleanerProfile', entityId: cleanerId });
   return updated;
 }
 
@@ -194,6 +314,11 @@ async function clockIn(businessId, cleanerId, assignmentId, actorUserId, { lat, 
   if (assignment.checkedInAt) {
     return assignment;
   }
+  if (['CANCELLED', 'COMPLETED'].includes(assignment.booking.status)) {
+    const err = new Error(`This booking is already ${assignment.booking.status.toLowerCase()}`);
+    err.status = 409;
+    throw err;
+  }
 
   // strict geo check: if booking has lat/lng, ensure within 500m
   if (
@@ -255,13 +380,8 @@ async function clockIn(businessId, cleanerId, assignmentId, actorUserId, { lat, 
     metadata: { lat, lng, bookingId: assignment.bookingId },
   });
 
-  try {
-    const notifications = require('../notifications/notifications.service');
-    await notifications.notifyCleanerAssigned?.(businessId, assignment.booking, cleaner.userId);
-  } catch (e) {
-    /* non-fatal */
-  }
-
+  // (This used to call notifyCleanerAssigned here — telling the cleaner they
+  // had just been assigned the job they were checking in to.)
   return updated;
 }
 
@@ -334,6 +454,9 @@ async function clockOut(businessId, cleanerId, assignmentId, actorUserId, { lat,
 module.exports = {
   onboardCleaner,
   offboardCleaner,
+  suspendCleaner,
+  reactivateCleaner,
+  listUpcomingJobs,
   listCleaners,
   setAvailability,
   getCleanerPerformance,

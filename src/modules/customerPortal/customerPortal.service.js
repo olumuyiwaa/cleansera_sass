@@ -7,10 +7,52 @@ const crypto = require('crypto');
 const prisma = require('../../config/database');
 const notificationClient = require('../../lib/notificationClient');
 const logger = require('../../config/logger');
-const { evaluateCancellation } = require('../../lib/cancellationPolicy');
-const { createRefund, createAncillaryCheckoutSession } = require('../../lib/stripeClient');
+const { createAncillaryCheckoutSession } = require('../../lib/stripeClient');
 
 const OTP_TTL_MS = 10 * 60 * 1000;
+const OTP_MAX_REQUESTS_PER_WINDOW = 3;
+const OTP_MAX_FAILED_ATTEMPTS = 5;
+const PORTAL_TOKEN_TTL = process.env.PORTAL_TOKEN_EXPIRY || '24h';
+
+const PURPOSE_CODE = 'CUSTOMER_PORTAL';
+// Failed guesses are recorded as rows of their own so they can be counted per
+// portal identity across server instances without a schema change.
+const PURPOSE_FAILED = 'CUSTOMER_PORTAL_FAILED';
+
+function tooMany(message) {
+  const err = new Error(message);
+  err.status = 429;
+  return err;
+}
+
+/**
+ * Each portal customer gets a dedicated identity row that can never hold a
+ * membership or a cleaner profile. The previous implementation attached the
+ * OTP to whichever User had the same phone number — which could be a business
+ * owner or cleaner — and then signed a token for that user, so a portal login
+ * could be turned into a staff session.
+ */
+function portalEmailFor(customerId) {
+  return `portal-${customerId}@portal.invalid`;
+}
+
+async function findOrCreatePortalUser(customer) {
+  const email = portalEmailFor(customer.id);
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing) return existing;
+  const bcrypt = require('bcryptjs');
+  return prisma.user.create({
+    data: {
+      email,
+      firstName: customer.firstName,
+      lastName: customer.lastName,
+      passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10),
+      isActive: true,
+    },
+  });
+}
+
+const { generateNumericCode, hashOtp: hashCode } = require('../../lib/otp');
 
 async function requestAccess(businessId, { phone }) {
   const customer = await prisma.customer.findUnique({
@@ -21,29 +63,23 @@ async function requestAccess(businessId, { phone }) {
     return { sent: true };
   }
 
-  // Reuse User OTP table if customer has a user link; otherwise store ephemeral on a system approach.
-  // Simplest path: create a short-lived token in OtpCode attached to a synthetic flow via Audit isn't ideal.
-  // We store OTP against a platform User if one exists with that phone, else email/SMS the code and
-  // verify against a hash kept only in memory is not multi-instance safe.
-  // Practical approach: create/find a lightweight User by phone for portal access only when needed.
+  const user = await findOrCreatePortalUser(customer);
+  const since = new Date(Date.now() - OTP_TTL_MS);
 
-  let user = await prisma.user.findFirst({ where: { phone } });
-  if (!user) {
-    const tempPassword = crypto.randomBytes(16).toString('hex');
-    const bcrypt = require('bcryptjs');
-    user = await prisma.user.create({
-      data: {
-        email: customer.email || `${phone.replace(/\D/g, '')}@portal.cleansera.local`,
-        phone,
-        firstName: customer.firstName,
-        lastName: customer.lastName,
-        passwordHash: await bcrypt.hash(tempPassword, 10),
-        isActive: true,
-      },
-    });
-  }
+  // Cap how many codes can be requested per window (SMS-bombing / cost abuse).
+  // Answer with the normal success shape so the cap does not reveal anything.
+  const recent = await prisma.otpCode.count({
+    where: { userId: user.id, purpose: PURPOSE_CODE, createdAt: { gte: since } },
+  });
+  if (recent >= OTP_MAX_REQUESTS_PER_WINDOW) return { sent: true };
 
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+  // Only the newest code is ever valid.
+  await prisma.otpCode.updateMany({
+    where: { userId: user.id, purpose: PURPOSE_CODE, consumedAt: null },
+    data: { consumedAt: new Date() },
+  });
+
+  const code = generateNumericCode();
   if (process.env.NODE_ENV !== 'production') {
     logger.info(`[DEV] Portal OTP for ${phone}: ${code}`);
     console.log(`[DEV] Portal OTP for ${phone}: ${code}`);
@@ -51,8 +87,8 @@ async function requestAccess(businessId, { phone }) {
   await prisma.otpCode.create({
     data: {
       userId: user.id,
-      code,
-      purpose: 'CUSTOMER_PORTAL',
+      code: hashCode(user.id, code),
+      purpose: PURPOSE_CODE,
       expiresAt: new Date(Date.now() + OTP_TTL_MS),
     },
   });
@@ -69,43 +105,63 @@ async function requestAccess(businessId, { phone }) {
 }
 
 async function verifyAccess(businessId, { phone, code }) {
+  const invalid = () => {
+    const err = new Error('Invalid or expired code');
+    err.status = 401;
+    return err;
+  };
+
   const customer = await prisma.customer.findUnique({
     where: { businessId_phone: { businessId, phone } },
   });
-  if (!customer) {
-    const err = new Error('Invalid phone or code');
-    err.status = 401;
-    throw err;
+  if (!customer) throw invalid();
+
+  const user = await prisma.user.findUnique({ where: { email: portalEmailFor(customer.id) } });
+  if (!user) throw invalid();
+
+  const since = new Date(Date.now() - OTP_TTL_MS);
+  const failures = await prisma.otpCode.count({
+    where: { userId: user.id, purpose: PURPOSE_FAILED, createdAt: { gte: since } },
+  });
+  if (failures >= OTP_MAX_FAILED_ATTEMPTS) {
+    // Burn any outstanding code: after too many wrong guesses the customer
+    // has to request a fresh one, which is itself rate limited.
+    await prisma.otpCode.updateMany({
+      where: { userId: user.id, purpose: PURPOSE_CODE, consumedAt: null },
+      data: { consumedAt: new Date() },
+    });
+    throw tooMany('Too many incorrect codes. Request a new code and try again.');
   }
-  const user = await prisma.user.findFirst({ where: { phone } });
-  if (!user) {
-    const err = new Error('Invalid phone or code');
-    err.status = 401;
-    throw err;
-  }
+
   const otp = await prisma.otpCode.findFirst({
     where: {
       userId: user.id,
-      purpose: 'CUSTOMER_PORTAL',
-      code,
+      purpose: PURPOSE_CODE,
+      code: hashCode(user.id, String(code)),
       consumedAt: null,
       expiresAt: { gt: new Date() },
     },
     orderBy: { createdAt: 'desc' },
   });
   if (!otp) {
-    const err = new Error('Invalid or expired code');
-    err.status = 401;
-    throw err;
+    await prisma.otpCode.create({
+      data: { userId: user.id, code: 'x', purpose: PURPOSE_FAILED, expiresAt: new Date(Date.now() + OTP_TTL_MS) },
+    });
+    throw invalid();
   }
-  await prisma.otpCode.update({ where: { id: otp.id }, data: { consumedAt: new Date() } });
+  await prisma.otpCode.updateMany({
+    where: { userId: user.id, purpose: { in: [PURPOSE_CODE, PURPOSE_FAILED] }, consumedAt: null },
+    data: { consumedAt: new Date() },
+  });
 
-  // Issue a short-lived portal token (JWT-like via existing util if available)
+  // The audience marks this as a customer-portal token. authenticate()
+  // rejects any token that carries one, so it can never act as a staff or
+  // cleaner session even though it shares the signing secret.
   const jwt = require('jsonwebtoken');
   const token = jwt.sign(
     { sub: user.id, businessId, portalCustomerId: customer.id, scope: 'CUSTOMER_PORTAL' },
     process.env.JWT_SECRET,
-    { expiresIn: '7d' }
+    { expiresIn: PORTAL_TOKEN_TTL, audience: 'customer-portal' }
   );
 
   return {
@@ -158,37 +214,16 @@ async function cancelMyBooking(businessId, customerId, bookingId, reason) {
     throw err;
   }
 
-  const evaluation = await evaluateCancellation(businessId, b);
-
-  let refund = null;
-  if (evaluation.refundCents > 0 && evaluation.refundPaymentIntentId) {
-    try {
-      refund = await createRefund({
-        paymentIntentId: evaluation.refundPaymentIntentId,
-        amountCents: evaluation.refundCents,
-        reason: 'requested_by_customer',
-      });
-    } catch (e) {
-      logger.error('portal cancellation refund failed', { bookingId, error: e.message });
-    }
-  }
-
-  return prisma.booking.update({
-    where: { id: bookingId },
-    data: {
-      status: 'CANCELLED',
-      cancelReason: reason || 'Cancelled by customer',
-      cancellationFeeCents: evaluation.feeCents || null,
-      ...(refund
-        ? {
-            refundedAmountCents: evaluation.refundCents,
-            refundedAt: new Date(),
-            stripeRefundId: refund.id,
-            paymentStatus: evaluation.refundCents >= evaluation.alreadyPaidCents ? 'REFUNDED' : 'PARTIAL',
-          }
-        : {}),
-    },
-  });
+  // Delegate to the same path staff use. The portal used to carry its own
+  // copy that refunded a single PaymentIntent, never gave back gift card value
+  // or coupon redemptions, and — because it skipped the notifications — left
+  // the business and the assigned cleaner unaware the job was cancelled.
+  return require('../bookings/bookings.service').cancelBooking(
+    businessId,
+    bookingId,
+    null,
+    reason || 'Cancelled by customer'
+  );
 }
 
 /**
@@ -212,7 +247,7 @@ async function tipMyBooking(businessId, customerId, bookingId, { amountCents, su
 
   const business = await prisma.business.findUnique({
     where: { id: businessId },
-    select: { stripeConnectedAccountId: true, stripeChargesEnabled: true },
+    select: { stripeConnectedAccountId: true, stripeChargesEnabled: true, currency: true },
   });
   if (!business?.stripeChargesEnabled || !business?.stripeConnectedAccountId) {
     const err = new Error('This business cannot accept card payments yet');
@@ -226,6 +261,7 @@ async function tipMyBooking(businessId, customerId, bookingId, { amountCents, su
     businessId,
     connectedAccountId: business.stripeConnectedAccountId,
     amountCents,
+    currency: business.currency,
     successUrl,
     cancelUrl,
     description: `Tip for booking ${bookingId}`,

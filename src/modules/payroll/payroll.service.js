@@ -369,7 +369,7 @@ async function payViaStripe(businessId, actorUserId, payoutId) {
     businessConnectedAccountId: payout.business.stripeConnectedAccountId,
     cleanerConnectedAccountId: payout.cleaner.user.stripeConnectedAccountId,
     amountCents: payout.totalCents,
-    currency: process.env.DEFAULT_CURRENCY || 'usd',
+    currency: payout.business.currency,
     payoutId: payout.id,
     description: `CleanSera payout ${payout.id} (${payout.cleaner.user.firstName} ${payout.cleaner.user.lastName})`,
   });

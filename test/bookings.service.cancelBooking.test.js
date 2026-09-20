@@ -1,6 +1,12 @@
-jest.mock('../src/config/database.js', () => ({
-  booking: { findFirst: jest.fn(), update: jest.fn() },
-}));
+jest.mock('../src/config/database.js', () => {
+  const db = {
+    booking: { findFirst: jest.fn(), update: jest.fn() },
+    giftCard: { findUnique: jest.fn(), update: jest.fn() },
+    coupon: { updateMany: jest.fn() },
+  };
+  db.$transaction = jest.fn((fn) => fn(db));
+  return db;
+});
 jest.mock('../src/utils/audit', () => ({ audit: jest.fn() }));
 jest.mock('../src/modules/notifications/notifications.service', () => ({
   notifyBookingCancelled: jest.fn(),
@@ -22,6 +28,7 @@ const bookingsService = require('../src/modules/bookings/bookings.service');
 describe('bookings.service.cancelBooking', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockPrisma.booking.update.mockImplementation(({ data }) => ({ ...existingBooking, ...data }));
   });
 
   const existingBooking = {
@@ -32,6 +39,7 @@ describe('bookings.service.cancelBooking', () => {
     amountPaidCents: 10000,
     stripePaymentIntentId: 'pi_job_123',
   };
+  const plan = (items, manual = 0) => ({ refundPlan: items, manualRefundCents: manual });
 
   test('rejects cancelling an already-completed booking', async () => {
     mockPrisma.booking.findFirst.mockResolvedValue({ ...existingBooking, status: 'COMPLETED' });
@@ -47,10 +55,9 @@ describe('bookings.service.cancelBooking', () => {
       feeCents: 5000,
       refundCents: 5000,
       alreadyPaidCents: 10000,
-      refundPaymentIntentId: 'pi_job_123',
+      ...plan([{ paymentIntentId: 'pi_job_123', amountCents: 5000 }]),
     });
     createRefund.mockResolvedValue({ id: 're_123' });
-    mockPrisma.booking.update.mockImplementation(({ data }) => ({ ...existingBooking, ...data }));
 
     const result = await bookingsService.cancelBooking('biz1', 'bk1', 'user1', 'schedule conflict');
 
@@ -73,37 +80,98 @@ describe('bookings.service.cancelBooking', () => {
     expect(result.status).toBe('CANCELLED');
   });
 
-  test('waiveFee=true skips the policy entirely and issues no refund', async () => {
+  test('deposit and job payment are refunded against their own PaymentIntents', async () => {
     mockPrisma.booking.findFirst.mockResolvedValue(existingBooking);
-    mockPrisma.booking.update.mockImplementation(({ data }) => ({ ...existingBooking, ...data }));
+    evaluateCancellation.mockResolvedValue({
+      feeCents: 0,
+      refundCents: 12000,
+      alreadyPaidCents: 12000,
+      ...plan([
+        { paymentIntentId: 'pi_job_123', amountCents: 10000 },
+        { paymentIntentId: 'pi_dep_9', amountCents: 2000 },
+      ]),
+    });
+    createRefund.mockResolvedValueOnce({ id: 're_a' }).mockResolvedValueOnce({ id: 're_b' });
 
-    await bookingsService.cancelBooking('biz1', 'bk1', 'user1', 'business error', { waiveFee: true });
+    await bookingsService.cancelBooking('biz1', 'bk1', 'user1', 'reason');
 
-    expect(evaluateCancellation).not.toHaveBeenCalled();
-    expect(createRefund).not.toHaveBeenCalled();
+    expect(createRefund).toHaveBeenCalledTimes(2);
+    expect(createRefund).toHaveBeenNthCalledWith(1, expect.objectContaining({ paymentIntentId: 'pi_job_123', amountCents: 10000 }));
+    expect(createRefund).toHaveBeenNthCalledWith(2, expect.objectContaining({ paymentIntentId: 'pi_dep_9', amountCents: 2000 }));
     expect(mockPrisma.booking.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ cancellationFeeCents: null }) })
+      expect.objectContaining({
+        data: expect.objectContaining({ refundedAmountCents: 12000, stripeRefundId: 're_a,re_b', paymentStatus: 'REFUNDED' }),
+      })
     );
   });
 
-  test('a failed Stripe refund still cancels the booking, without recording a refund', async () => {
+  test('waiveFee keeps the customer whole: the policy fee is dropped but what they paid is refunded', async () => {
     mockPrisma.booking.findFirst.mockResolvedValue(existingBooking);
     evaluateCancellation.mockResolvedValue({
       feeCents: 0,
       refundCents: 10000,
       alreadyPaidCents: 10000,
-      refundPaymentIntentId: 'pi_job_123',
+      ...plan([{ paymentIntentId: 'pi_job_123', amountCents: 10000 }]),
+    });
+    createRefund.mockResolvedValue({ id: 're_w' });
+
+    await bookingsService.cancelBooking('biz1', 'bk1', 'user1', 'business error', { waiveFee: true });
+
+    expect(evaluateCancellation).toHaveBeenCalledWith('biz1', existingBooking, { waiveFee: true });
+    expect(createRefund).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 10000 }));
+  });
+
+  test('a failed Stripe refund still cancels the booking, records the shortfall, and no refund', async () => {
+    mockPrisma.booking.findFirst.mockResolvedValue(existingBooking);
+    evaluateCancellation.mockResolvedValue({
+      feeCents: 0,
+      refundCents: 10000,
+      alreadyPaidCents: 10000,
+      ...plan([{ paymentIntentId: 'pi_job_123', amountCents: 10000 }]),
     });
     createRefund.mockRejectedValue(new Error('stripe is down'));
-    mockPrisma.booking.update.mockImplementation(({ data }) => ({ ...existingBooking, ...data }));
 
     const result = await bookingsService.cancelBooking('biz1', 'bk1', 'user1', 'reason');
 
     expect(result.status).toBe('CANCELLED');
-    expect(mockPrisma.booking.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.not.objectContaining({ refundedAmountCents: expect.anything() }),
-      })
+    const data = mockPrisma.booking.update.mock.calls[0][0].data;
+    expect(data.refundedAmountCents).toBeUndefined();
+    expect(data.paymentNote).toContain('refund_failed:10000');
+  });
+
+  test('money paid outside Stripe is flagged for the business to return by hand', async () => {
+    mockPrisma.booking.findFirst.mockResolvedValue({ ...existingBooking, stripePaymentIntentId: null });
+    evaluateCancellation.mockResolvedValue({
+      feeCents: 0,
+      refundCents: 10000,
+      alreadyPaidCents: 10000,
+      ...plan([], 10000),
+    });
+
+    await bookingsService.cancelBooking('biz1', 'bk1', 'user1', 'reason');
+
+    expect(createRefund).not.toHaveBeenCalled();
+    expect(mockPrisma.booking.update.mock.calls[0][0].data.paymentNote).toContain('refund_due_manual:10000');
+  });
+
+  test('cancelling gives the gift card value and the coupon redemption back', async () => {
+    mockPrisma.booking.findFirst.mockResolvedValue({ ...existingBooking, giftCardId: 'gc1', giftCardAppliedCents: 3000, couponId: 'cp1' });
+    evaluateCancellation.mockResolvedValue({ feeCents: 0, refundCents: 0, alreadyPaidCents: 0, ...plan([]) });
+    mockPrisma.giftCard.findUnique.mockResolvedValue({ id: 'gc1', initialValueCents: 5000, balanceCents: 1000 });
+
+    await bookingsService.cancelBooking('biz1', 'bk1', 'user1', 'reason');
+
+    expect(mockPrisma.giftCard.update).toHaveBeenCalledWith({ where: { id: 'gc1' }, data: { balanceCents: 4000 } });
+    expect(mockPrisma.coupon.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ id: 'cp1' }), data: { redeemedCount: { decrement: 1 } } })
     );
+  });
+
+  test('a restored gift card balance never exceeds its original value', async () => {
+    mockPrisma.booking.findFirst.mockResolvedValue({ ...existingBooking, giftCardId: 'gc1', giftCardAppliedCents: 3000 });
+    evaluateCancellation.mockResolvedValue({ feeCents: 0, refundCents: 0, alreadyPaidCents: 0, ...plan([]) });
+    mockPrisma.giftCard.findUnique.mockResolvedValue({ id: 'gc1', initialValueCents: 5000, balanceCents: 4500 });
+    await bookingsService.cancelBooking('biz1', 'bk1', 'user1', 'reason');
+    expect(mockPrisma.giftCard.update).toHaveBeenCalledWith({ where: { id: 'gc1' }, data: { balanceCents: 5000 } });
   });
 });

@@ -1,5 +1,6 @@
 const prisma = require('../config/database');
 const { distanceMeters } = require('../utils/geo');
+const { getZonedParts, zonedWallTimeToUtc } = require('../utils/timezone');
 
 function overlaps(aStart, aEnd, bStart, bEnd) {
   return aStart < bEnd && bStart < aEnd;
@@ -9,28 +10,6 @@ function timeParts(t) {
   // t is "HH:MM"
   const [hh, mm] = (t || '0:0').split(':').map(Number);
   return [hh, mm];
-}
-
-/**
- * Builds a slot's actual [start, end) window as real Date objects, anchored
- * to the given calendar day (a Date already set to midnight on the day the
- * shift *starts*). If the shift's end time is numerically at or before its
- * start time (e.g. startTime "22:00", endTime "06:00"), the shift is
- * treated as an overnight one that ends on the following calendar day,
- * rather than as a zero/negative-length window.
- */
-function buildSlotWindow(slot, anchorMidnight) {
-  const [sh, sm] = timeParts(slot.startTime);
-  const start = new Date(anchorMidnight);
-  start.setHours(sh, sm, 0, 0);
-
-  const [eh, em] = timeParts(slot.endTime);
-  const end = new Date(anchorMidnight);
-  end.setHours(eh, em, 0, 0);
-  if (end <= start) {
-    end.setDate(end.getDate() + 1);
-  }
-  return { start, end };
 }
 
 /**
@@ -46,14 +25,25 @@ function buildSlotWindow(slot, anchorMidnight) {
  * anchored on the booking's own start day, and again anchored one day
  * earlier, and accepts either.
  */
-function slotCovers(slot, startDate, endDate) {
-  const dayOffsets = [0, -1];
-  for (const dayOffset of dayOffsets) {
-    const anchor = new Date(startDate);
-    anchor.setDate(anchor.getDate() + dayOffset);
-    anchor.setHours(0, 0, 0, 0);
-    if (anchor.getDay() !== slot.dayOfWeek) continue;
-    const { start, end } = buildSlotWindow(slot, anchor);
+function slotCovers(slot, startDate, endDate, timeZone = 'UTC') {
+  // Availability is entered as wall-clock times ("08:00-17:00 on Monday") and
+  // means the business's local time. This used to build the window with the
+  // server's setHours/getDay, so on a UTC server a Dutch cleaner available
+  // 08:00-17:00 was matched against 08:00-17:00 UTC, two hours off in summer.
+  const local = getZonedParts(startDate, timeZone);
+  const [sh, sm] = timeParts(slot.startTime);
+  const [eh, em] = timeParts(slot.endTime);
+
+  for (const dayOffset of [0, -1]) {
+    // Calendar arithmetic on the local date only (no instants involved).
+    const day = new Date(Date.UTC(local.year, local.month - 1, local.day + dayOffset));
+    if (day.getUTCDay() !== slot.dayOfWeek) continue;
+    const y = day.getUTCFullYear();
+    const m = day.getUTCMonth() + 1;
+    const d = day.getUTCDate();
+    const start = zonedWallTimeToUtc(y, m, d, sh, sm || 0, timeZone);
+    let end = zonedWallTimeToUtc(y, m, d, eh, em || 0, timeZone);
+    if (end <= start) end = zonedWallTimeToUtc(y, m, d + 1, eh, em || 0, timeZone); // overnight shift
     if (startDate >= start && endDate <= end) return true;
   }
   return false;
@@ -123,10 +113,12 @@ async function currentWorkload(cleanerId, aroundDate) {
  */
 async function findAvailableCleaners(businessId, startDate, endDate, { maxDistanceMeters = 30000, travelBufferMinutes = 30, lat, lng, includeEta = false } = {}) {
   const cleaners = await prisma.cleanerProfile.findMany({ where: { businessId, status: 'ACTIVE' }, include: { availability: true, user: true } });
+  const biz = await prisma.business.findUnique({ where: { id: businessId }, select: { timezone: true } });
+  const timeZone = (biz && biz.timezone) || 'Europe/Amsterdam';
 
   const candidates = [];
   for (const c of cleaners) {
-    const hasSlot = c.availability && c.availability.some((s) => slotCovers(s, startDate, endDate));
+    const hasSlot = c.availability && c.availability.some((s) => slotCovers(s, startDate, endDate, timeZone));
     if (!hasSlot) continue;
 
     const bufferMs = travelBufferMinutes * 60 * 1000;
@@ -192,4 +184,4 @@ async function findAvailableCleaners(businessId, startDate, endDate, { maxDistan
   return candidates.map((c) => c.cleaner);
 }
 
-module.exports = { findAvailableCleaners };
+module.exports = { findAvailableCleaners, slotCovers };

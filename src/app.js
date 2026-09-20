@@ -4,13 +4,23 @@ const cors = require('cors');
 const helmet = require('helmet');
 const routes = require('./routes');
 const stripeWebhookController = require('./modules/webhooks/stripe.controller');
-const bodyParser = require('body-parser');
 const errorHandler = require('./middleware/errorHandler');
 const { apiLimiter } = require('./middleware/rateLimiter');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 
 const app = express();
+
+// Behind a reverse proxy or load balancer (nginx, DigitalOcean App Platform,
+// ...) req.ip is the proxy's address unless Express is told how many proxy
+// hops to trust. Without this every visitor shares one rate-limit bucket, so
+// the 20-per-15-minutes auth limiter locks out the whole platform after 20
+// sign-ins. TRUST_PROXY = number of hops ("1" for a single proxy), or "false"
+// to disable. Defaults to 1 in production.
+const trustProxy = process.env.TRUST_PROXY !== undefined
+    ? (process.env.TRUST_PROXY === 'false' ? false : Number(process.env.TRUST_PROXY))
+    : (process.env.NODE_ENV === 'production' ? 1 : false);
+app.set('trust proxy', trustProxy);
 
 // ---------- Swagger setup ----------
 const options = {
@@ -44,11 +54,15 @@ const options = {
 
 const specs = swaggerJsdoc(options);
 
-// Mount docs BEFORE helmet so CSP does not break the UI
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs, {
-    explorer: true,
-    customSiteTitle: 'CleanSera API Docs',
-}));
+// Mount docs BEFORE helmet so CSP does not break the UI. The interactive docs
+// are a map of every endpoint, so they are off in production unless
+// ENABLE_API_DOCS=true.
+if (process.env.NODE_ENV !== 'production' || process.env.ENABLE_API_DOCS === 'true') {
+    app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs, {
+        explorer: true,
+        customSiteTitle: 'CleanSera API Docs',
+    }));
+}
 
 // ---------- Normal middleware ----------
 app.use(helmet({
@@ -66,7 +80,7 @@ app.use(
 // Stripe webhook must stay before express.json()
 app.post(
     '/api/v1/webhooks/stripe',
-    bodyParser.raw({ type: 'application/json' }),
+    express.raw({ type: 'application/json' }),
     (req, res, next) => {
         req.rawBody = req.body;
         return stripeWebhookController.handle(req, res, next);

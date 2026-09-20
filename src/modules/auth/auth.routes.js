@@ -2,7 +2,13 @@ const express = require('express');
 const { body } = require('express-validator');
 const controller = require('./auth.controller');
 const validate = require('../../middleware/validate');
-const { authLimiter } = require('../../middleware/rateLimiter');
+const {
+    authLimiter,
+    loginLimiter,
+    passwordResetLimiter,
+    refreshLimiter,
+    sensitiveActionLimiter,
+} = require('../../middleware/rateLimiter');
 const { authenticate } = require('../../middleware/authenticate');
 
 const router = express.Router();
@@ -26,45 +32,57 @@ router.post(
 router.post(
     '/login',
     authLimiter,
+    loginLimiter,
     [body('email').isEmail().normalizeEmail(), body('password').notEmpty()],
     validate,
     controller.login
 );
 
-router.post('/refresh', [body('refreshToken').notEmpty()], validate, controller.refresh);
+router.post('/refresh', refreshLimiter, [body('refreshToken').notEmpty()], validate, controller.refresh);
 router.post('/logout', [body('refreshToken').notEmpty()], validate, controller.logout);
 
 router.post(
     '/password-reset/request',
+    passwordResetLimiter,
     [body('email').isEmail().normalizeEmail()],
     validate,
     controller.requestPasswordReset
 );
 router.post(
     '/password-reset/confirm',
+    authLimiter,
     [body('token').notEmpty(), body('password').isLength({ min: 8 })],
     validate,
     controller.confirmPasswordReset
 );
 
-router.post('/email/verify/request', authenticate, controller.requestEmailVerify);
+router.post('/email/verify/request', authenticate, sensitiveActionLimiter, controller.requestEmailVerify);
 router.post(
     '/email/verify/confirm',
     authenticate,
+    sensitiveActionLimiter,
     [body('code').notEmpty()],
     validate,
     controller.confirmEmailVerify
 );
 
-router.post('/2fa/generate', authenticate, controller.generate2FA);
+router.post('/2fa/generate', authenticate, sensitiveActionLimiter, controller.generate2FA);
 router.post(
     '/2fa/verify-enable',
     authenticate,
+    sensitiveActionLimiter,
     [body('token').notEmpty()],
     validate,
     controller.verifyEnable2FA
 );
-router.post('/2fa/disable', authenticate, controller.disable2FA);
+router.post(
+    '/2fa/disable',
+    authenticate,
+    sensitiveActionLimiter,
+    [body('password').notEmpty(), body('code').notEmpty()],
+    validate,
+    controller.disable2FA
+);
 
 router.get('/me', authenticate, controller.me);
 router.patch(

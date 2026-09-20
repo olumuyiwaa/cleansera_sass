@@ -92,6 +92,7 @@ const PATCHABLE_BUSINESS_FIELDS = [
   'customDomain',
   'preferredPaymentCollection',
   'offlinePaymentInstructions',
+  'currency',
 ];
 
 const ALLOWED_PAYMENT_COLLECTION = ['ONLINE_CARD', 'MANUAL_OFFLINE', 'BOTH'];
@@ -107,6 +108,29 @@ async function updateBusiness(businessId, patch) {
   const data = {};
   for (const key of PATCHABLE_BUSINESS_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(patch, key)) data[key] = patch[key];
+  }
+
+  if ('currency' in data) {
+    const code = String(data.currency || '').trim().toLowerCase();
+    const supported = Intl.supportedValuesOf('currency').map((c) => c.toLowerCase());
+    if (!supported.includes(code)) {
+      const err = new Error('currency must be a valid ISO 4217 code (e.g. eur, usd, gbp)');
+      err.status = 422;
+      throw err;
+    }
+    // Changing currency once money has been taken would leave the same
+    // business with payments in two currencies and payouts that no longer add up.
+    if (code !== b.currency) {
+      const taken = await prisma.booking.count({
+        where: { businessId, OR: [{ paymentStatus: { in: ['PAID', 'PARTIAL', 'DEPOSIT_PAID'] } }, { depositPaidAt: { not: null } }] },
+      });
+      if (taken > 0) {
+        const err = new Error('Currency cannot be changed after payments have been recorded');
+        err.status = 409;
+        throw err;
+      }
+    }
+    data.currency = code;
   }
 
   if ('preferredPaymentCollection' in data) {

@@ -27,7 +27,10 @@ router.post(
   controller.onboard
 );
 
+router.get('/:id/upcoming-jobs', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.upcomingJobs);
 router.post('/:id/offboard', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.offboard);
+router.post('/:id/suspend', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.suspend);
+router.post('/:id/reactivate', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.reactivate);
 
 router.put(
   '/:id/availability',

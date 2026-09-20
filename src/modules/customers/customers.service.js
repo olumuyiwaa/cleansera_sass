@@ -127,6 +127,55 @@ async function updateCustomer(businessId, id, actorUserId, patch) {
   return updated;
 }
 
+const REDACTED = 'Verwijderd';
+
+async function anonymizeCustomer(businessId, customerId) {
+  await prisma.$transaction(async (tx) => {
+    await tx.customerAddress.deleteMany({ where: { customerId } });
+    await tx.recurringSchedule.updateMany({ where: { customerId, status: { not: 'CANCELLED' } }, data: { status: 'CANCELLED' } });
+    await tx.waitlistEntry.updateMany({
+      where: { businessId, customerId },
+      data: { contactName: null, contactEmail: null, contactPhone: null, notes: null },
+    });
+    // Location and access details on past bookings identify the person's home.
+    await tx.booking.updateMany({
+      where: { businessId, customerId },
+      data: {
+        addressLine1: REDACTED,
+        addressLine2: null,
+        city: '',
+        state: '',
+        postalCode: null,
+        latitude: null,
+        longitude: null,
+        accessCode: null,
+        keyLocation: null,
+        parkingInstructions: null,
+        petNotes: null,
+        specialInstructions: null,
+      },
+    });
+    // phone is required and unique per business, so leave a unique placeholder.
+    await tx.customer.update({
+      where: { id: customerId },
+      data: {
+        firstName: REDACTED,
+        lastName: 'Klant',
+        email: null,
+        phone: `deleted-${customerId}`,
+        notes: null,
+        referralCode: null,
+      },
+    });
+    // The portal login identity and any codes issued to it.
+    const portalUser = await tx.user.findUnique({ where: { email: `portal-${customerId}@portal.invalid` }, select: { id: true } });
+    if (portalUser) {
+      await tx.otpCode.deleteMany({ where: { userId: portalUser.id } });
+      await tx.user.delete({ where: { id: portalUser.id } });
+    }
+  });
+}
+
 async function deleteCustomer(businessId, id, actorUserId) {
   await getCustomer(businessId, id);
   // Soft approach: refuse if they have future bookings
@@ -143,8 +192,14 @@ async function deleteCustomer(businessId, id, actorUserId) {
     err.status = 422;
     throw err;
   }
-  await prisma.customer.delete({ where: { id } });
-  await audit({ businessId, actorUserId, action: 'CUSTOMER_DELETED', entityType: 'Customer', entityId: id });
+  // Anonymise instead of deleting. A hard delete cascaded to the customer's
+  // bookings, payroll earnings and reviews, destroying financial records the
+  // business is legally required to keep (in the Netherlands the tax
+  // administration must be retained for years) while the customer's actual
+  // request — erase my personal data — is served just as well by removing
+  // everything that identifies them and keeping the accounting rows.
+  await anonymizeCustomer(businessId, id);
+  await audit({ businessId, actorUserId, action: 'CUSTOMER_ANONYMIZED', entityType: 'Customer', entityId: id });
 }
 
 async function addAddress(businessId, customerId, actorUserId, payload) {
