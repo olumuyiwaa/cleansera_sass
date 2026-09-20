@@ -80,10 +80,11 @@ function advanceRunDate(fromDate, frequency, startTime, timeZone = 'UTC') {
   let dayOffset = 7;
   if (frequency === 'BIWEEKLY') dayOffset = 14;
   if (frequency === 'MONTHLY') {
-    // month math done on the wall-clock calendar date, then re-zoned
-    const next = new Date(parts.year, parts.month - 1, parts.day);
-    next.setMonth(next.getMonth() + 1);
-    return zonedWallTimeToUtc(next.getFullYear(), next.getMonth() + 1, next.getDate(), hh, mm || 0, timeZone);
+    // Same calendar day next month, clamped to that month's last day. The old
+    // setMonth(+1) overflowed: Jan 31 -> "Feb 31" -> Mar 3.
+    const lastDayNextMonth = new Date(Date.UTC(parts.year, parts.month + 1, 0)).getUTCDate();
+    const day = Math.min(parts.day, lastDayNextMonth);
+    return zonedWallTimeToUtc(parts.year, parts.month + 1, day, hh, mm || 0, timeZone);
   }
   return zonedWallTimeToUtc(parts.year, parts.month, parts.day + dayOffset, hh, mm || 0, timeZone);
 }
