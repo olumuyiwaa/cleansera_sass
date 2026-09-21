@@ -188,7 +188,10 @@ function renderInvoiceHtml(inv, timeZone = 'Europe/Amsterdam') {
     .join('');
 
   return `<!doctype html>
-<html lang="nl"><head><meta charset="utf-8"><title>Factuur ${esc(inv.number)}</title>
+<html lang="nl"><head><meta charset="utf-8">
+<!-- The dashboard opens this as a blob: page on the app origin, where no CSP response header applies. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<title>Factuur ${esc(inv.number)}</title>
 <style>
   body{font:14px/1.5 system-ui,sans-serif;color:#111;max-width:760px;margin:32px auto;padding:0 16px}
   h1{font-size:22px;margin:0 0 4px} .muted{color:#555} .r{text-align:right}

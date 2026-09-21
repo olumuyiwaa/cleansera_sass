@@ -129,6 +129,11 @@ describe('printable HTML', () => {
     customerSnapshot: { name: '<script>alert(1)</script>', address: { line1: '"><img src=x onerror=alert(1)>', city: 'A' } },
     lines: [{ description: '</td><script>x()</script>', quantity: 1, netCents: 10000, vatRateBps: 2100, grossCents: 12100 }],
   };
+  test('carries its own CSP so a blob: copy on the app origin can never run script', () => {
+    const html = svc.renderInvoiceHtml(inv);
+    expect(html).toMatch(/<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">/);
+  });
+
   test('escapes every user-controlled value and shows the legally required fields', () => {
     const html = svc.renderInvoiceHtml(inv);
     expect(html).not.toMatch(/<script>|<img src=x/);
