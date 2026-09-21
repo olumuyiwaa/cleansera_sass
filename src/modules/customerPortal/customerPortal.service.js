@@ -292,22 +292,59 @@ async function rescheduleMyBooking(businessId, customerId, bookingId, { schedule
   const durationMs = new Date(b.scheduledEnd) - new Date(b.scheduledStart);
   const end = new Date(start.getTime() + (durationMs > 0 ? durationMs : 3600000));
 
-  // basic availability
-  const scheduler = require('../../lib/scheduler');
-  const candidates = await scheduler.findAvailableCleaners(businessId, start, end, {
-    lat: b.latitude,
-    lng: b.longitude,
-  });
-  if (!candidates || candidates.length === 0) {
-    const err = new Error('No availability at the requested time');
-    err.status = 422;
-    throw err;
-  }
+  // Same rules as booking through the widget. The portal used to look only at
+  // "is any cleaner free", ignoring opening hours and the unassigned bookings
+  // already holding the slot - so it could oversell exactly what the widget
+  // now protects.
+  const { assertWithinBusinessHours } = require('../../lib/businessHours');
+  const { spareCapacity } = require('../../lib/capacity');
+  const biz = await prisma.business.findUnique({ where: { id: businessId }, select: { timezone: true } });
+  await assertWithinBusinessHours(businessId, start, end, (biz && biz.timezone) || 'Europe/Amsterdam');
 
-  return prisma.booking.update({
-    where: { id: bookingId },
-    data: { scheduledStart: start, scheduledEnd: end, status: b.status === 'ASSIGNED' ? 'CONFIRMED' : b.status },
+  const { withBusinessLock } = require('../../lib/bookingLock');
+  const { assertCleanerFree } = require('../../lib/assignmentConflicts');
+
+  const updated = await withBusinessLock(businessId, async (tx) => {
+    const { spare } = await spareCapacity(businessId, start, end, { lat: b.latitude, lng: b.longitude, excludeBookingId: bookingId });
+    if (spare < 1) {
+      const err = new Error('No availability at the requested time');
+      err.status = 422;
+      throw err;
+    }
+
+    // Keep the assigned cleaner(s) only if they are free at the new time;
+    // otherwise release them (the business re-dispatches). Rescheduling
+    // previously flipped ASSIGNED -> CONFIRMED but left the cleaner attached.
+    const assignments = await tx.bookingAssignment.findMany({ where: { bookingId } });
+    let released = false;
+    for (const a of assignments) {
+      try {
+        await assertCleanerFree(a.cleanerId, start, end, { excludeBookingId: bookingId });
+      } catch (e) {
+        released = true;
+        break;
+      }
+    }
+    if (released) await tx.bookingAssignment.deleteMany({ where: { bookingId } });
+
+    return tx.booking.update({
+      where: { id: bookingId },
+      data: {
+        scheduledStart: start,
+        scheduledEnd: end,
+        status: released && b.status === 'ASSIGNED' ? 'CONFIRMED' : b.status,
+        reminderSentAt: null, // remind for the NEW time
+      },
+    });
   });
+
+  // The business (and customers' own history) must know: staff were never told.
+  try {
+    await require('../notifications/notifications.service').notifyBookingRescheduled(businessId, updated);
+  } catch (e) {
+    /* non-fatal */
+  }
+  return updated;
 }
 
 async function leaveReview(businessId, customerId, bookingId, { rating, comment }) {

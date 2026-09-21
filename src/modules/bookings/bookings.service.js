@@ -3,6 +3,7 @@ const { audit } = require('../../utils/audit');
 const notifications = require('../notifications/notifications.service');
 const logger = require('../../config/logger');
 const { createBookingCheckoutSession, createAncillaryCheckoutSession, createRefund, expireCheckoutSession } = require('../../lib/stripeClient');
+const { assertOpen, statusAfterAssign } = require('../../lib/bookingStateMachine');
 const { computeInitialRunDate } = require('../../utils/timezone');
 const { evaluateCancellation } = require('../../lib/cancellationPolicy');
 const { amountDueCents, jobPaymentCents } = require('../../lib/paymentMath');
@@ -202,6 +203,7 @@ async function assignBooking(businessId, bookingId, cleanerId, actorUserId, opti
   }
 
   const booking = await getBookingById(businessId, bookingId);
+  assertOpen(booking, 'assign a cleaner to');
   const cleaner = await prisma.cleanerProfile.findFirst({ where: { id: cleanerId, businessId, status: 'ACTIVE' } });
   if (!cleaner) {
     const err = new Error('Cleaner not available');
@@ -215,7 +217,8 @@ async function assignBooking(businessId, bookingId, cleanerId, actorUserId, opti
   const assignment = await prisma.bookingAssignment.create({
     data: { bookingId, cleanerId, isTeamLead, earningsSplitPercent },
   });
-  await prisma.booking.update({ where: { id: bookingId }, data: { status: 'ASSIGNED' } });
+  const nextStatus = statusAfterAssign(booking.status);
+  if (nextStatus !== booking.status) await prisma.booking.update({ where: { id: bookingId }, data: { status: nextStatus } });
   await audit({ businessId, actorUserId, action: 'BOOKING_ASSIGNED', entityType: 'BookingAssignment', entityId: assignment.id, metadata: { cleanerId } });
   // notify assigned cleaner via notifications
   const assignedCleaner = await prisma.cleanerProfile.findUnique({ where: { id: cleanerId }, include: { user: true } });
@@ -226,9 +229,23 @@ async function assignBooking(businessId, bookingId, cleanerId, actorUserId, opti
 }
 
 async function confirmBooking(businessId, bookingId, actorUserId) {
-  await getBookingById(businessId, bookingId);
+  const booking = await getBookingById(businessId, bookingId);
+  if (booking.status === 'CANCELLED') {
+    const err = new Error('Cannot confirm a cancelled booking');
+    err.status = 409;
+    throw err;
+  }
+  // Only a REQUESTED booking is confirmed. Already confirmed / assigned / in
+  // progress / completed is a no-op: confirming must never move a booking backwards.
+  if (booking.status !== 'REQUESTED') return booking;
+
   const updated = await prisma.booking.update({ where: { id: bookingId }, data: { status: 'CONFIRMED' } });
   await audit({ businessId, actorUserId, action: 'BOOKING_CONFIRMED', entityType: 'Booking', entityId: bookingId });
+  try {
+    await notifications.notifyBookingConfirmed(businessId, { ...updated, customer: booking.customer });
+  } catch (e) {
+    logger.warn('Failed to send booking confirmation', { bookingId, error: e.message });
+  }
   return updated;
 }
 
@@ -303,7 +320,9 @@ async function markPaymentReceived(
 }
 
 async function completeBooking(businessId, bookingId, actorUserId, options = {}) {
-  const { requestReview = true, force = false } = options;
+  // paymentRequest: send a pay link even when the booking is not flagged autoChargeOnComplete
+  // (the dashboard's "complete" button does; the cleaner app follows the flag).
+  const { requestReview = true, force = false, paymentRequest = false } = options;
 
   const booking = await prisma.booking.findFirst({
     where: { id: bookingId, businessId },
@@ -354,61 +373,32 @@ async function completeBooking(businessId, bookingId, actorUserId, options = {})
     entityId: bookingId,
   });
 
-  // Optional auto-charge path (creates a Checkout Session for the customer to pay)
-  // Full off-session capture requires saving a payment method — that is Phase 2.
-  // For Phase 1 we generate a payment link / session and notify the customer.
+  // Payment request: a Checkout link for whatever is still owed. One
+  // implementation for both completion paths (createPaymentLink also stores the
+  // session on the booking). Full off-session capture needs a saved payment
+  // method / SEPA mandate - not built yet.
   if (
-      booking.autoChargeOnComplete &&
-      booking.paymentStatus !== 'PAID' &&
-      booking.business?.stripeChargesEnabled &&
-      booking.business?.stripeConnectedAccountId &&
-      amountDueCents(booking) > 0
+    (booking.autoChargeOnComplete || paymentRequest) &&
+    booking.paymentStatus !== 'PAID' &&
+    booking.business?.stripeChargesEnabled &&
+    booking.business?.stripeConnectedAccountId &&
+    amountDueCents(booking) > 0
   ) {
     try {
-      const session = await createBookingCheckoutSession({
-        bookingId: booking.id,
-        businessId,
-        connectedAccountId: booking.business.stripeConnectedAccountId,
-        amountCents: amountDueCents(booking),
-        currency: booking.business.currency,
-        customerEmail: booking.customer?.email,
-        description: `${booking.service?.name || 'Cleaning'} — ${booking.id}`,
-      });
-
-      await prisma.booking.update({
-        where: { id: bookingId },
-        data: {
-          stripeCheckoutSessionId: session.id,
-          paymentNote: `auto_charge_session:${session.id};created_at:${new Date().toISOString()}`,
-        },
-      });
-
-      // Notify customer with payment link
-      try {
-        await notifications.sendCustomerPaymentLink?.(
-            businessId,
-            booking,
-            booking.customer,
-            session.url
-        );
-      } catch (e) {
-        logger.warn('Failed to send payment link notification', { bookingId, error: e.message });
-      }
+      const { url } = await createPaymentLink(businessId, bookingId, actorUserId);
+      await notifications.sendCustomerPaymentLink(businessId, booking, booking.customer, url);
     } catch (chargeErr) {
-      logger.error('Auto-charge session creation failed', {
-        bookingId,
-        error: chargeErr.message,
-      });
-      // Non-fatal — job is still completed
+      logger.error('Payment request on completion failed', { bookingId, error: chargeErr.message });
+      // Non-fatal - the job is still completed
     }
   }
 
   // Ask for review
   if (requestReview && booking.customer) {
     try {
-      await notifications.requestCustomerReview?.(businessId, booking, booking.customer);
+      await notifications.requestReview(businessId, booking, booking.customer);
     } catch (e) {
-      // non-fatal
+      logger.warn('Failed to request review', { bookingId, error: e.message });
     }
   }
 
@@ -416,6 +406,18 @@ async function completeBooking(businessId, bookingId, actorUserId, options = {})
   // compensation rule the business has set for each of them (if any).
   // Never fails the completion — a payroll snag shouldn't block the job
   // from being marked done.
+  //
+  // Anyone who clocked in but never out is finished now that the job is done.
+  // HOURLY earnings need a check-out, so without this a dispatcher completing
+  // the job (or a team lead completing for the team) silently paid nobody.
+  try {
+    await prisma.bookingAssignment.updateMany({
+      where: { bookingId, checkedInAt: { not: null }, checkedOutAt: null },
+      data: { checkedOutAt: new Date() },
+    });
+  } catch (e) {
+    logger.warn('Failed to stamp check-outs', { bookingId, error: e.message });
+  }
   try {
     await payroll.computeEarningsForBooking(businessId, bookingId);
   } catch (e) {
@@ -430,25 +432,19 @@ async function completeBooking(businessId, bookingId, actorUserId, options = {})
  * Also records check-out location when provided.
  */
 async function completeBookingByCleaner(bookingId, cleanerUserId, { lat, lng, notes } = {}) {
-  const cleaner = await prisma.cleanerProfile.findFirst({
-    where: { userId: cleanerUserId, status: 'ACTIVE' },
-    include: { business: true },
-  });
-  if (!cleaner) {
-    const err = new Error('Active cleaner profile not found');
-    err.status = 403;
-    throw err;
-  }
-
+  // Resolve the profile THROUGH the assignment. Looking up "the first active
+  // profile of this user" broke cleaners who work for two businesses: the
+  // booking belonged to the second one and they got "not assigned".
   const assignment = await prisma.bookingAssignment.findFirst({
-    where: { bookingId, cleanerId: cleaner.id },
-    include: { booking: true },
+    where: { bookingId, cleaner: { userId: cleanerUserId, status: 'ACTIVE' } },
+    include: { booking: true, cleaner: { include: { business: true } } },
   });
   if (!assignment) {
     const err = new Error('You are not assigned to this booking');
     err.status = 403;
     throw err;
   }
+  const cleaner = assignment.cleaner;
 
   // Photo proof: require at least one AFTER photo before a job can be
   // marked complete. Without this, "photo proof" would just be an optional
@@ -492,6 +488,18 @@ async function completeBookingByCleaner(bookingId, cleanerUserId, { lat, lng, no
       entityId: bookingId,
       metadata: { note: String(notes).trim().slice(0, 2000) },
     });
+  }
+
+  // Team jobs: the job is done when the team lead finishes, or when the last
+  // cleaner who is still on site does. A helper checking out first only records
+  // their own check-out (previously the first cleaner to tap "complete"
+  // completed the job for everyone and the others' hourly pay was skipped).
+  const stillOnSite = await prisma.bookingAssignment.count({
+    where: { bookingId, checkedInAt: { not: null }, checkedOutAt: null },
+  });
+  if (!assignment.isTeamLead && stillOnSite > 0) {
+    const current = await prisma.booking.findUnique({ where: { id: bookingId } });
+    return { ...current, awaitingTeam: true };
   }
 
   return completeBooking(cleaner.businessId, bookingId, cleanerUserId, {
@@ -805,7 +813,8 @@ async function rescheduleBooking(businessId, bookingId, actorUserId, { scheduled
 
   const updated = await prisma.booking.update({
     where: { id: bookingId },
-    data: { scheduledStart: start, scheduledEnd: end },
+    // reminderSentAt reset: a moved booking must get a reminder for its NEW time
+    data: { scheduledStart: start, scheduledEnd: end, reminderSentAt: null },
   });
   await audit({ businessId, actorUserId, action: 'BOOKING_RESCHEDULED', entityType: 'Booking', entityId: bookingId, metadata: { scheduledStart: start, scheduledEnd: end } });
   try {
@@ -836,61 +845,10 @@ async function updatePaymentStatus(businessId, bookingId, actorUserId, { payment
 
 // Override completeBooking to request review after completion
 async function completeBookingWithReview(businessId, bookingId, actorUserId) {
-  const booking = await getBookingById(businessId, bookingId);
-  // The staff path had none of the guards the shared completeBooking() has:
-  // it could complete a cancelled booking (generating payroll for it) and a
-  // second call re-sent the review request and payment link.
-  if (booking.status === 'CANCELLED') {
-    const err = new Error('Cannot complete a cancelled booking');
-    err.status = 422;
-    throw err;
-  }
-  if (booking.status === 'COMPLETED') return booking;
-  const updated = await prisma.booking.update({
-    where: { id: bookingId },
-    data: { status: 'COMPLETED' },
-  });
-  await audit({ businessId, actorUserId, action: 'BOOKING_COMPLETED', entityType: 'Booking', entityId: bookingId });
-
-  // Credit assigned cleaner(s) their earnings for this job. Non-fatal —
-  // see completeBooking's identical hook above for why.
-  try {
-    await payroll.computeEarningsForBooking(businessId, bookingId);
-  } catch (e) {
-    logger.error('Failed to compute cleaner earnings', { bookingId, error: e.message });
-  }
-
-  // Review request (existing)
-  try {
-    const full = await prisma.booking.findUnique({
-      where: { id: bookingId },
-      include: { customer: true },
-    });
-    if (full?.customer) {
-      await notifications.requestReview(businessId, full, full.customer);
-    }
-  } catch (e) { /* non-fatal */ }
-
-  // Auto payment request if unpaid
-  try {
-    if (booking.paymentStatus !== 'PAID' && booking.quotedPriceCents > 0) {
-      const business = await prisma.business.findUnique({
-        where: { id: businessId },
-        select: { stripeChargesEnabled: true, stripeConnectedAccountId: true },
-      });
-      if (business?.stripeChargesEnabled && business.stripeConnectedAccountId) {
-        const { url } = await createPaymentLink(businessId, bookingId, actorUserId, {
-          // optional custom success/cancel
-        });
-        // notify customer with payment URL
-        await notifications.notifyPaymentRequest(businessId, booking, url);
-      }
-    }
-  } catch (e) {
-    // log only — never fail complete because payment failed
-  }
-
-  return updated;
+  await getBookingById(businessId, bookingId); // 404 for another tenant's booking
+  // Same implementation as the cleaner path (there used to be two diverging
+  // copies); the dashboard button always sends the payment request.
+  return completeBooking(businessId, bookingId, actorUserId, { requestReview: true, paymentRequest: true });
 }
 
 async function createPaymentLink(businessId, bookingId, actorUserId, { successUrl, cancelUrl } = {}) {

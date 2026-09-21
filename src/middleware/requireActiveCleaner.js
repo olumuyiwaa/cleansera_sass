@@ -4,20 +4,25 @@ const { error } = require('../utils/response');
 /**
  * Resolves the ACTIVE CleanerProfile for the logged-in user and attaches it
  * as req.cleaner, plus req.businessId for anything downstream that expects
- * tenant scoping. Used by cleaner self-service routes (/cleaner/*), which
- * are reached with a plain user access token — cleaners don't select a
- * business context at login the way staff do, so this looks the profile up
- * directly rather than relying on a businessId claim in the JWT.
+ * tenant scoping. Used by cleaner self-service routes (/cleaner/*).
  *
- * A user with more than one active cleaner profile (rare — freelancing
- * across two businesses on this platform) will always resolve to the first
- * one found; there's no multi-business cleaner switcher yet.
+ * A cleaner who works for more than one business chooses a workspace at
+ * login; authenticate() puts the matching profile id on req.user. That choice
+ * used to be ignored here (the first active profile always won), so the
+ * workspace switcher in the app was cosmetic. Now the chosen profile is used,
+ * and only when the token carries no workspace does it fall back to the first
+ * active profile.
  */
 async function requireActiveCleaner(req, res, next) {
   try {
     const cleaner = await prisma.cleanerProfile.findFirst({
-      where: { userId: req.user.id, status: 'ACTIVE' },
+      where: {
+        userId: req.user.id,
+        status: 'ACTIVE',
+        ...(req.user.cleanerProfileId ? { id: req.user.cleanerProfileId } : {}),
+      },
       include: { business: true },
+      orderBy: { createdAt: 'asc' },
     });
     if (!cleaner) {
       return error(res, 403, 'Active cleaner profile not found');

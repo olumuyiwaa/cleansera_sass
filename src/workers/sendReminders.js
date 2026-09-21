@@ -15,7 +15,8 @@ async function sendReminders() {
   const bookings = await prisma.booking.findMany({
     where: {
       scheduledStart: { gte: now, lt: upper },
-      status: { in: ['REQUESTED', 'CONFIRMED'] },
+      // ASSIGNED was missing: once a cleaner was dispatched the customer never got a reminder.
+      status: { in: ['REQUESTED', 'CONFIRMED', 'ASSIGNED'] },
       reminderSentAt: null,
     },
     include: { customer: true, service: true },

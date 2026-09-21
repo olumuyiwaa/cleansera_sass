@@ -39,7 +39,7 @@ async function getSummary(req, res, next) {
 
 async function myEarnings(req, res, next) {
   try {
-    const summary = await service.getMyEarningsSummary(req.user.id);
+    const summary = await service.getMyEarningsSummary(req.user.id, (req.cleaner && req.cleaner.id) || req.user.cleanerProfileId);
     return success(res, 200, summary);
   } catch (err) {
     next(err);

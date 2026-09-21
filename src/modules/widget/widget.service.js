@@ -6,6 +6,7 @@ const { depositHoldMinutes } = require('../../lib/depositHold');
 const { assertWithinBusinessHours } = require('../../lib/businessHours');
 const { withBusinessLock } = require('../../lib/bookingLock');
 const { vatRateFor, splitGross } = require('../../lib/vat');
+const { spareCapacity } = require('../../lib/capacity');
 
 /**
  * Creates the deposit Checkout Session for a freshly-created booking, when
@@ -56,20 +57,6 @@ function formatMoney(cents, currency) {
  * used to be invisible to it and the same slot could be sold to any number of
  * customers. Subtract the overlapping unassigned bookings from the pool.
  */
-async function spareCapacity(businessId, start, end, opts = {}) {
-  const scheduler = require('../../lib/scheduler');
-  const candidates = (await scheduler.findAvailableCleaners(businessId, start, end, opts)) || [];
-  const unassigned = await prisma.booking.count({
-    where: {
-      businessId,
-      status: { in: ['REQUESTED', 'CONFIRMED'] },
-      assignments: { none: {} },
-      scheduledStart: { lt: end },
-      scheduledEnd: { gt: start },
-    },
-  });
-  return { candidates, spare: Math.max(0, candidates.length - unassigned) };
-}
 
 /**
  * Re-checked INSIDE the per-business lock right before the booking is written.

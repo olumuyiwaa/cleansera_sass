@@ -75,11 +75,15 @@ async function notifyBookingCreated(businessId, booking) {
     try {
       const n = await prisma.notification.create({ data: { businessId, recipientUserId: m.userId, type: 'BOOKING_REQUESTED', title, body } });
       created.push(n);
-      try { getIo().to(`business:${businessId}`).emit('booking_created', { booking, notification: n }); } catch (e) { /* ignore */ }
       try { getIo().to(`user:${m.userId}`).emit('notification', n); } catch (e) { /* ignore */ }
     } catch (err) {
       logger.error('failed to create booking notification', err);
     }
+  }
+  // Once for the whole business room. It used to be emitted inside the loop,
+  // so every connected staff client received the event once per member.
+  if (created.length) {
+    try { getIo().to(`business:${businessId}`).emit('booking_created', { booking, notification: created[0] }); } catch (e) { /* ignore */ }
   }
 
   return created;
@@ -122,11 +126,14 @@ async function notifyCleanerAssigned(businessId, booking, cleanerUserId) {
  */
 async function pushToCleanerByUserId(cleanerUserId, { title, body, data }) {
   try {
-    const cleaner = await prisma.cleanerProfile.findFirst({ where: { userId: cleanerUserId }, select: { id: true } });
-    if (!cleaner) return;
-    const tokens = await prisma.cleanerDeviceToken.findMany({ where: { cleanerId: cleaner.id }, select: { token: true } });
+    // All of the user's profiles, not just the first: a cleaner who works for
+    // two businesses registers the device on whichever workspace they were in.
+    const profiles = await prisma.cleanerProfile.findMany({ where: { userId: cleanerUserId }, select: { id: true } });
+    if (profiles.length === 0) return;
+    const tokens = await prisma.cleanerDeviceToken.findMany({ where: { cleanerId: { in: profiles.map((p) => p.id) } }, select: { token: true } });
     if (tokens.length === 0) return;
-    const result = await notificationClient.sendPush({ tokens: tokens.map((t) => t.token), title, body, data });
+    const unique = [...new Set(tokens.map((t) => t.token))];
+    const result = await notificationClient.sendPush({ tokens: unique, title, body, data });
     if (result?.invalidTokens?.length) {
       await prisma.cleanerDeviceToken.deleteMany({ where: { token: { in: result.invalidTokens } } });
     }
@@ -209,17 +216,69 @@ async function notifyBookingRescheduled(businessId, booking) {
   );
 }
 
-async function requestReview(businessId, booking, customer) {
-  const title = 'How was your cleaning?';
-  const text = `Hi ${customer.firstName || ''}, thanks for choosing us. Please rate your recent cleaning and leave a short review.`;
+/** Link into the customer portal of this business (where reviews, payment and invoices live). */
+async function portalUrl(businessId) {
+  const biz = await prisma.business.findUnique({ where: { id: businessId }, select: { subdomain: true } });
+  const base = process.env.APP_URL || 'https://app.cleansera.example';
+  return biz && biz.subdomain ? `${base}/${biz.subdomain}/portal` : base;
+}
+
+async function sendToCustomer(customer, title, text, logLabel) {
   try {
     if (customer.email) await notificationClient.sendEmail({ to: customer.email, subject: title, text });
     if (customer.phone) await notificationClient.sendSms({ to: customer.phone, body: text });
   } catch (e) {
-    logger.error('failed to send review request', e);
+    logger.error(`failed to send ${logLabel}`, e);
   }
+}
+
+async function requestReview(businessId, booking, customer) {
+  const title = 'How was your cleaning?';
+  // The message used to ask for a review without saying where to leave it.
+  const link = await portalUrl(businessId);
+  const text = `Hi ${customer.firstName || ''}, thanks for choosing us. Please rate your recent cleaning and leave a short review: ${link}`;
+  await sendToCustomer(customer, title, text, 'review request');
   // also notify business members that review was requested
   return notifyMembers(businessId, 'REVIEW_REQUESTED', 'Review requested', `Review request sent for booking ${booking.id}`);
+}
+
+// bookings.service called requestCustomerReview / sendCustomerPaymentLink /
+// notifyPaymentRequest, none of which existed: the calls were optional-chained
+// (silent no-op) or threw inside a swallowed try/catch, so no review request or
+// payment link was ever sent when a job was completed.
+const requestCustomerReview = requestReview;
+
+async function sendCustomerPaymentLink(businessId, booking, customer, url) {
+  const title = 'Payment for your cleaning';
+  const text = `Hi ${customer.firstName || ''}, thank you for your booking on ${await when(businessId, booking.scheduledStart)}. You can pay securely online here: ${url}`;
+  await sendToCustomer(customer, title, text, 'payment link');
+}
+
+async function notifyPaymentRequest(businessId, booking, url) {
+  const customer = booking.customer || (await prisma.customer.findUnique({ where: { id: booking.customerId } }));
+  if (!customer) return null;
+  return sendCustomerPaymentLink(businessId, booking, customer, url);
+}
+
+/** Tells the customer their request was confirmed (the received-message promises this). */
+async function notifyBookingConfirmed(businessId, booking) {
+  const customer = booking.customer || (await prisma.customer.findUnique({ where: { id: booking.customerId } }));
+  if (!customer) return null;
+  const text = `Hi ${customer.firstName || ''}, your cleaning on ${await when(businessId, booking.scheduledStart)} is confirmed. Manage your booking: ${await portalUrl(businessId)}`;
+  return sendToCustomer(customer, 'Your booking is confirmed', text, 'booking confirmation');
+}
+
+async function notifyCleanerUnassigned(businessId, booking, cleanerUserId) {
+  const title = 'Assignment removed';
+  const body = `You are no longer assigned to the job on ${await when(businessId, booking.scheduledStart)}.`;
+  try {
+    const n = await prisma.notification.create({ data: { businessId, recipientUserId: cleanerUserId, type: 'ASSIGNMENT', title, body } });
+    try { getIo().to(`user:${cleanerUserId}`).emit('notification', n); } catch (e) { /* ignore */ }
+    await pushToCleanerByUserId(cleanerUserId, { title, body, data: { type: 'UNASSIGNED', bookingId: booking.id } });
+    return n;
+  } catch (e) {
+    logger.error('failed to notify cleaner unassignment', e);
+  }
 }
 
 async function sendBookingReminder(businessId, booking, customer) {
@@ -245,6 +304,11 @@ module.exports.sendBookingReminder = sendBookingReminder;
 module.exports.notifyBookingCancelled = notifyBookingCancelled;
 module.exports.notifyBookingRescheduled = notifyBookingRescheduled;
 module.exports.requestReview = requestReview;
+module.exports.requestCustomerReview = requestCustomerReview;
+module.exports.sendCustomerPaymentLink = sendCustomerPaymentLink;
+module.exports.notifyPaymentRequest = notifyPaymentRequest;
+module.exports.notifyBookingConfirmed = notifyBookingConfirmed;
+module.exports.notifyCleanerUnassigned = notifyCleanerUnassigned;
 
 async function notifyRecurringConflict(businessId, schedule, conflictingBooking, occurrenceStart) {
   return notifyMembers(

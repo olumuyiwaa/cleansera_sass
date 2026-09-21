@@ -1,10 +1,12 @@
 jest.mock('../src/config/database.js', () => ({
   booking: { findFirst: jest.fn(), update: jest.fn() },
-  cleanerProfile: { findFirst: jest.fn() },
-  bookingAssignment: { create: jest.fn(), findMany: jest.fn(), findFirst: jest.fn().mockResolvedValue(null) },
+  cleanerProfile: { findFirst: jest.fn(), findUnique: jest.fn() },
+  bookingAssignment: { create: jest.fn(), findMany: jest.fn(), findFirst: jest.fn().mockResolvedValue(null), count: jest.fn(), delete: jest.fn() },
   businessSubscription: { findUnique: jest.fn() },
 }));
 jest.mock('../src/utils/audit', () => ({ audit: jest.fn() }));
+jest.mock('../src/config/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
+jest.mock('../src/modules/notifications/notifications.service', () => ({ notifyCleanerAssigned: jest.fn(), notifyCleanerUnassigned: jest.fn() }));
 jest.mock('../src/lib/scheduler', () => ({ findAvailableCleaners: jest.fn() }));
 
 const mockPrisma = require('../src/config/database.js');
@@ -18,6 +20,7 @@ describe('dispatch.service.createAssignment', () => {
 
   const booking = {
     id: 'bk1',
+    status: 'CONFIRMED',
     scheduledStart: new Date('2026-01-01T10:00:00Z'),
     scheduledEnd: new Date('2026-01-01T12:00:00Z'),
     latitude: 1,

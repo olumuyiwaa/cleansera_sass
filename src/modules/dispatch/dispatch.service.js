@@ -1,5 +1,7 @@
 const prisma = require('../../config/database');
 const { audit } = require('../../utils/audit');
+const logger = require('../../config/logger');
+const { assertOpen, statusAfterAssign, statusAfterUnassign } = require('../../lib/bookingStateMachine');
 
 async function listDispatchItems(businessId) {
   // Return recent booking assignments for dispatch dashboard
@@ -28,6 +30,8 @@ async function createAssignment(businessId, bookingId, cleanerId, actorUserId, o
     err.status = 404;
     throw err;
   }
+  // Same rule as bookings.assignBooking: a cancelled or completed booking is not re-opened by assigning it.
+  assertOpen(booking, 'assign a cleaner to');
 
   let chosenCleaner = cleanerId;
   if (chosenCleaner) {
@@ -81,15 +85,25 @@ async function createAssignment(businessId, bookingId, cleanerId, actorUserId, o
   const assignment = await prisma.bookingAssignment.create({
     data: { bookingId, cleanerId: chosenCleaner, isTeamLead, earningsSplitPercent },
   });
-  await prisma.booking.update({ where: { id: bookingId }, data: { status: 'ASSIGNED' } });
+  const nextStatus = statusAfterAssign(booking.status);
+  if (nextStatus !== booking.status) await prisma.booking.update({ where: { id: bookingId }, data: { status: nextStatus } });
   await audit({
     businessId,
     actorUserId,
-    action: 'DISPATCH_AUTO_ASSIGNED',
+    // Was always DISPATCH_AUTO_ASSIGNED, even for a dispatcher's manual pick.
+    action: pickReason === 'manual' ? 'DISPATCH_MANUAL_ASSIGNED' : 'DISPATCH_AUTO_ASSIGNED',
     entityType: 'BookingAssignment',
     entityId: assignment.id,
     metadata: { cleanerId: chosenCleaner, reason: pickReason },
   });
+
+  // Unlike bookings.assignBooking, this path never told the cleaner.
+  try {
+    const profile = await prisma.cleanerProfile.findUnique({ where: { id: chosenCleaner }, select: { userId: true } });
+    if (profile) await require('../notifications/notifications.service').notifyCleanerAssigned(businessId, booking, profile.userId);
+  } catch (e) {
+    logger.warn('Failed to notify cleaner of dispatch assignment', { bookingId, error: e.message });
+  }
   return assignment;
 }
 
@@ -105,8 +119,30 @@ async function getAssignment(businessId, id) {
 
 async function deleteAssignment(businessId, id) {
   const a = await getAssignment(businessId, id);
+  const booking = await prisma.booking.findFirst({ where: { id: a.bookingId, businessId } });
+  if (booking) assertOpen(booking, 'unassign a cleaner from');
+  if (a.checkedInAt) {
+    const err = new Error('This cleaner has already started the job and cannot be unassigned');
+    err.status = 409;
+    throw err;
+  }
+
   await prisma.bookingAssignment.delete({ where: { id } });
-  await prisma.booking.update({ where: { id: a.bookingId }, data: { status: 'CONFIRMED' } });
+
+  // Only fall back to CONFIRMED when nobody is left on the job. It used to be
+  // set unconditionally, wrongly reopening team jobs that still had cleaners.
+  if (booking) {
+    const remaining = await prisma.bookingAssignment.count({ where: { bookingId: a.bookingId } });
+    const next = statusAfterUnassign(booking.status, remaining);
+    if (next !== booking.status) await prisma.booking.update({ where: { id: a.bookingId }, data: { status: next } });
+  }
+
+  try {
+    const profile = await prisma.cleanerProfile.findUnique({ where: { id: a.cleanerId }, select: { userId: true } });
+    if (profile && booking) await require('../notifications/notifications.service').notifyCleanerUnassigned(businessId, booking, profile.userId);
+  } catch (e) {
+    logger.warn('Failed to notify cleaner of unassignment', { assignmentId: id, error: e.message });
+  }
 }
 
 module.exports = { listDispatchItems, createAssignment, getAssignment, deleteAssignment, suggestCleaners, getCleanerDayRoute };

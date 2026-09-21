@@ -220,8 +220,12 @@ async function getEarningsSummaryByCleanerId(cleanerId) {
 }
 
 /** Same as above, resolved from a userId — for callers that only have the logged-in user, not their CleanerProfile. */
-async function getMyEarningsSummary(cleanerUserId) {
-  const cleaner = await prisma.cleanerProfile.findFirst({ where: { userId: cleanerUserId, status: 'ACTIVE' } });
+async function getMyEarningsSummary(cleanerUserId, cleanerProfileId) {
+  // cleanerProfileId = the workspace the cleaner is currently in (multi-business cleaners)
+  const cleaner = await prisma.cleanerProfile.findFirst({
+    where: { userId: cleanerUserId, status: 'ACTIVE', ...(cleanerProfileId ? { id: cleanerProfileId } : {}) },
+    orderBy: { createdAt: 'asc' },
+  });
   if (!cleaner) {
     const err = new Error('Active cleaner profile not found');
     err.status = 403;
