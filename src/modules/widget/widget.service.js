@@ -3,6 +3,8 @@ const { isWithinServiceAreas } = require('../../utils/geo');
 const { createAncillaryCheckoutSession } = require('../../lib/stripeClient');
 const { toPublicBranding } = require('../../lib/branding');
 const { depositHoldMinutes } = require('../../lib/depositHold');
+const { assertWithinBusinessHours } = require('../../lib/businessHours');
+const { withBusinessLock } = require('../../lib/bookingLock');
 
 /**
  * Creates the deposit Checkout Session for a freshly-created booking, when
@@ -66,6 +68,49 @@ async function spareCapacity(businessId, start, end, opts = {}) {
     },
   });
   return { candidates, spare: Math.max(0, candidates.length - unassigned) };
+}
+
+/**
+ * Re-checked INSIDE the per-business lock right before the booking is written.
+ * (quote() checks too, but two requests can both pass that check.)
+ */
+async function assertCapacity(businessId, start, end, q) {
+  const { spare } = await spareCapacity(businessId, start, end, { lat: q.latitude, lng: q.longitude });
+  if (spare < 1) throw httpError(409, 'That time was just taken. Please choose another slot.');
+}
+
+/**
+ * Caps how many bookings one contact can create per day through the public
+ * form, so a script cannot fill a calendar (or run up SMS costs) from one
+ * phone number. WIDGET_MAX_BOOKINGS_PER_CUSTOMER_PER_DAY overrides.
+ */
+async function assertCustomerNotSpamming(client, customerId) {
+  const limit = Number(process.env.WIDGET_MAX_BOOKINGS_PER_CUSTOMER_PER_DAY) || 5;
+  const recent = await client.booking.count({
+    where: { customerId, status: { not: 'CANCELLED' }, createdAt: { gte: new Date(Date.now() - 24 * 3600 * 1000) } },
+  });
+  if (recent >= limit) {
+    throw httpError(429, 'Too many bookings for this contact today. Please contact the business directly.');
+  }
+}
+
+/** Only what the public site and widget render. The full row includes Stripe account ids and internal settings. */
+function toPublicBusiness(business) {
+  if (!business) return business;
+  return {
+    id: business.id,
+    name: business.name,
+    subdomain: business.subdomain,
+    timezone: business.timezone,
+    currency: business.currency,
+    branding: business.branding,
+    hours: (business.hours || []).map((h) => ({
+      dayOfWeek: h.dayOfWeek,
+      openTime: h.openTime,
+      closeTime: h.closeTime,
+      isClosed: !!h.isClosed,
+    })),
+  };
 }
 
 /**
@@ -220,7 +265,7 @@ async function getStorefront(businessId) {
       preferred === 'MANUAL_OFFLINE' || preferred === 'BOTH';
 
   return {
-    business,
+    business: toPublicBusiness(business),
     services,
     onboardingComplete,
     payment: {
@@ -281,6 +326,7 @@ async function quote(businessId, {
       throw httpError(422, `Please choose a time at least ${hours} hour${hours === 1 ? '' : 's'} from now`);
     }
     const end = new Date(start.getTime() + (quote.breakdown.estimatedMinutes || 60) * 60 * 1000);
+    await assertWithinBusinessHours(businessId, start, end, await getBusinessTimezone(businessId));
     const { spare } = await spareCapacity(businessId, start, end, { lat: coords.latitude, lng: coords.longitude });
     if (spare < 1) throw httpError(422, 'No cleaners available for the requested scheduledStart');
   }
@@ -418,6 +464,8 @@ async function submitBooking(businessId, payload) {
     rooms, bathrooms, sqft, frequency,
   } = payload;
 
+  if (!scheduledStart || Number.isNaN(new Date(scheduledStart).getTime())) throw httpError(422, 'scheduledStart is required');
+
   // Price using the same inputs the customer saw in the live quote. This call
   // used to omit rooms/bathrooms/sqft/frequency, so per-room and per-sqft
   // services were booked at the base price whatever the quote said.
@@ -437,8 +485,10 @@ async function submitBooking(businessId, payload) {
     if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) throw httpError(422, 'Coupon expired');
     if (coupon.appliesToServiceId && coupon.appliesToServiceId !== serviceId) throw httpError(422, 'Coupon not applicable to this service');
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await withBusinessLock(businessId, async (tx) => {
+      await assertCapacity(businessId, start, end, q);
       const cust = await upsertGuestCustomer(tx, businessId, { firstName, lastName, email, phone });
+      await assertCustomerNotSpamming(tx, cust.id);
 
       if (coupon.perCustomerLimit) {
         const used = await tx.booking.count({ where: { customerId: cust.id, couponId: coupon.id } });
@@ -477,26 +527,32 @@ async function submitBooking(businessId, payload) {
   const REFERRAL_DISCOUNT_CENTS = 1000; // new customer gets 10.00 off
   const REFERRAL_REWARD_CENTS = 1000; // referrer gets a 10.00-off coupon for next time
 
-  const existingCustomer = await prisma.customer.findFirst({ where: { businessId, phone } });
-  let referrer = null;
-  if (referralCode && !existingCustomer) {
-    referrer = await prisma.customer.findFirst({ where: { businessId, referralCode: referralCode.toUpperCase() } });
-    // A customer cannot refer themselves under a second phone number.
-    if (referrer && referrer.phone === phone) referrer = null;
-  }
-  const referralDiscountCents = referrer ? Math.min(REFERRAL_DISCOUNT_CENTS, priceCents) : 0;
-  const finalPriceCents = priceCents - referralDiscountCents;
+  const { booking, customer, referrer, referralDiscountCents } = await withBusinessLock(businessId, async (tx) => {
+    await assertCapacity(businessId, start, end, q);
 
-  const customer = await upsertGuestCustomer(prisma, businessId, { firstName, lastName, email, phone });
-  const customerReferralCode = customer.referralCode || (await require('../customers/customers.service').ensureReferralCode(customer.id));
+    const existingCustomer = await tx.customer.findFirst({ where: { businessId, phone } });
+    let ref = null;
+    if (referralCode && !existingCustomer) {
+      ref = await tx.customer.findFirst({ where: { businessId, referralCode: referralCode.toUpperCase() } });
+      // A customer cannot refer themselves under a second phone number, or
+      // reuse their own e-mail address to farm the discount.
+      if (ref && (ref.phone === phone || (ref.email && email && ref.email.toLowerCase() === String(email).toLowerCase()))) ref = null;
+    }
+    const discount = ref ? Math.min(REFERRAL_DISCOUNT_CENTS, priceCents) : 0;
 
-  const booking = await prisma.booking.create({
-    data: buildBookingData({
-      businessId, customerId: customer.id, serviceId, payload, q, start, end,
-      priceCents: finalPriceCents,
-      extra: { referredByCustomerId: referrer?.id || null },
-    }),
+    const cust = await upsertGuestCustomer(tx, businessId, { firstName, lastName, email, phone });
+    await assertCustomerNotSpamming(tx, cust.id);
+
+    const b = await tx.booking.create({
+      data: buildBookingData({
+        businessId, customerId: cust.id, serviceId, payload, q, start, end,
+        priceCents: priceCents - discount,
+        extra: { referredByCustomerId: ref?.id || null },
+      }),
+    });
+    return { booking: b, customer: cust, referrer: ref, referralDiscountCents: discount };
   });
+  const customerReferralCode = customer.referralCode || (await require('../customers/customers.service').ensureReferralCode(customer.id));
 
   // Notify business dashboard (Socket.io) + confirmation email/SMS to customer
   try {
@@ -551,6 +607,8 @@ module.exports = {
   checkGiftCardBalance,
   applyGiftCardToBooking,
   upsertGuestCustomer,
+  toPublicBusiness,
+  assertCustomerNotSpamming,
 };
 
 /**
@@ -595,7 +653,7 @@ async function slots(businessId, query) {
     return { date: dateKey, timezone: tz, slots: cached.filter((sl) => new Date(sl.start).getTime() >= earliest) };
   }
 
-  const businessHours = await prisma.businessHours.findMany({ where: { businessId, dayOfWeek } });
+  const businessHours = await prisma.businessHours.findMany({ where: { businessId, dayOfWeek, isClosed: false } });
   const out = [];
   const seen = new Map();
 

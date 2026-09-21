@@ -16,6 +16,16 @@ const widgetLimiter = rateLimit({
   message: { success: false, message: 'Too many requests, please slow down' },
 });
 
+// Anything that creates a booking or sends a message to an arbitrary phone or
+// address from the public widget. Much stricter than the read-side limiter.
+const widgetSubmitLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many booking attempts from this address, please try again later' },
+});
+
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 300,
@@ -74,4 +84,5 @@ module.exports = {
   passwordResetLimiter,
   refreshLimiter,
   sensitiveActionLimiter,
+  widgetSubmitLimiter,
 };

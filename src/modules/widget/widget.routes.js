@@ -3,7 +3,8 @@ const { body } = require('express-validator');
 const controller = require('./widget.controller');
 const { resolveBusinessFromHost } = require('../../middleware/resolveBusinessFromHost');
 const { resolveBusinessFromSlug } = require('../../middleware/resolveBusinessFromSlug');
-const { widgetLimiter } = require('../../middleware/rateLimiter');
+const { widgetLimiter, widgetSubmitLimiter } = require('../../middleware/rateLimiter');
+const { requireCaptcha } = require('../../lib/captcha');
 const validate = require('../../middleware/validate');
 const { requireAcceptingBookings } = require('../../middleware/requireActiveSubscription');
 
@@ -41,6 +42,8 @@ function widgetRoutesFor(resolveBusiness) {
   router.get('/gift-cards/:code', controller.giftCardBalance);
   router.post(
     '/waitlist',
+    widgetSubmitLimiter,
+    requireCaptcha(),
     requireAcceptingBookings,
     [
       body('desiredStart').isISO8601(),
@@ -52,7 +55,7 @@ function widgetRoutesFor(resolveBusiness) {
     validate,
     controller.joinWaitlist
   );
-  router.post('/bookings', requireAcceptingBookings, bookingValidators, validate, controller.submitBooking);
+  router.post('/bookings', widgetSubmitLimiter, requireCaptcha(), requireAcceptingBookings, bookingValidators, validate, controller.submitBooking);
 
   return router;
 }
