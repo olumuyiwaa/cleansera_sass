@@ -53,6 +53,7 @@ router.use('/inventory', require('../modules/inventory/inventory.routes'));
 router.use('/compliance', require('../modules/compliance/compliance.routes'));
 router.use('/payroll', require('../modules/payroll/payroll.routes'));
 router.use('/waitlist', require('../modules/waitlist/waitlist.routes'));
+router.use('/invoices', require('../modules/invoices/invoices.routes'));
 
 const portalRoutes = require('../modules/customerPortal/customerPortal.routes');
 router.use('/portal', portalRoutes);

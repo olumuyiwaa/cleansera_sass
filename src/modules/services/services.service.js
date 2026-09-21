@@ -2,8 +2,20 @@ const prisma = require('../../config/database');
 const { audit } = require('../../utils/audit');
 const { pick } = require('../../utils/pick');
 
-const SERVICE_FIELDS = ['name', 'description', 'pricingModel', 'basePriceCents', 'estimatedMinutes', 'isActive'];
+const SERVICE_FIELDS = ['name', 'description', 'pricingModel', 'basePriceCents', 'estimatedMinutes', 'isActive', 'vatRateBps'];
 const ADDON_FIELDS = ['name', 'priceCents', 'extraMinutes'];
+
+/** null clears the override (use the business default); otherwise a whole number of basis points. */
+function assertVatRate(data) {
+  if (!('vatRateBps' in data) || data.vatRateBps === null) return;
+  const n = Number(data.vatRateBps);
+  if (!Number.isInteger(n) || n < 0 || n > 3000) {
+    const err = new Error('vatRateBps must be a whole number of basis points between 0 and 3000 (2100 = 21%)');
+    err.status = 422;
+    throw err;
+  }
+  data.vatRateBps = n;
+}
 
 async function listServices(businessId) {
   // Dashboard listing intentionally includes inactive services too — a
@@ -14,7 +26,9 @@ async function listServices(businessId) {
 }
 
 async function createService(businessId, payload) {
-  const created = await prisma.service.create({ data: { ...pick(payload, SERVICE_FIELDS), businessId } });
+  const fields = pick(payload, SERVICE_FIELDS);
+  assertVatRate(fields);
+  const created = await prisma.service.create({ data: { ...fields, businessId } });
   await audit({ businessId, action: 'SERVICE_CREATED', entityType: 'Service', entityId: created.id });
   return created;
 }
@@ -32,6 +46,7 @@ async function getService(businessId, id) {
 async function updateService(businessId, id, patch) {
   await getService(businessId, id);
   const data = pick(patch, SERVICE_FIELDS);
+  assertVatRate(data);
   const updated = await prisma.service.update({ where: { id }, data });
   await audit({ businessId, action: 'SERVICE_UPDATED', entityType: 'Service', entityId: id, metadata: data });
   return updated;

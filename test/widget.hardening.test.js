@@ -92,6 +92,16 @@ describe('opening hours', () => {
   });
 });
 
+describe('quote tax block', () => {
+  test('reports the BTW included in the (VAT-inclusive) price without changing the total', async () => {
+    prisma.business.findUnique.mockResolvedValue({ timezone: 'Europe/Amsterdam', vatRateBps: 2100 });
+    pricing.calculateQuote.mockResolvedValue({ priceCents: 12100, breakdown: { estimatedMinutes: 120 } });
+    const q = await widget.quote('biz', { serviceId: 's1' });
+    expect(q.priceCents).toBe(12100);
+    expect(q.tax).toEqual({ pricesIncludeVat: true, vatRateBps: 2100, vatCents: 2100, netCents: 10000 });
+  });
+});
+
 describe('booking creation is serialised and re-checked (no overselling)', () => {
   test('happy path takes the per-business advisory lock and writes inside it', async () => {
     const r = await widget.submitBooking('biz', payload());

@@ -3,6 +3,7 @@ const { getPublicUrl, getPublicUploadUrl } = require('../../config/storage');
 const { toPublicBranding } = require('../../lib/branding');
 const crypto = require('crypto');
 const { pick } = require('../../utils/pick');
+const { normalizeKvk, normalizeVatNumber, normalizeIban } = require('../../lib/taxIdentifiers');
 const { PUBLIC_IMAGE_TYPES, prefixes, assertKeyUnderPrefix, assertContentType } = require('../../lib/storageKeys');
 
 const ADDRESS_FIELDS = ['label', 'line1', 'line2', 'city', 'state', 'postalCode', 'country', 'latitude', 'longitude', 'isPrimary'];
@@ -94,6 +95,12 @@ const PATCHABLE_BUSINESS_FIELDS = [
   'preferredPaymentCollection',
   'offlinePaymentInstructions',
   'currency',
+  // Invoicing / BTW
+  'legalName',
+  'kvkNumber',
+  'vatNumber',
+  'invoiceIban',
+  'vatRateBps',
 ];
 
 const ALLOWED_PAYMENT_COLLECTION = ['ONLINE_CARD', 'MANUAL_OFFLINE', 'BOTH'];
@@ -132,6 +139,30 @@ async function updateBusiness(businessId, patch) {
       }
     }
     data.currency = code;
+  }
+
+  // Tax identity: blank clears the field, anything else must be valid.
+  const invalid = (msg) => { const err = new Error(msg); err.status = 422; return err; };
+  const cleared = (v) => v == null || String(v).trim() === '';
+  if ('legalName' in data) {
+    data.legalName = cleared(data.legalName) ? null : String(data.legalName).trim().slice(0, 200);
+  }
+  if ('kvkNumber' in data) {
+    if (cleared(data.kvkNumber)) data.kvkNumber = null;
+    else if (!(data.kvkNumber = normalizeKvk(data.kvkNumber))) throw invalid('kvkNumber must be an 8-digit KvK number');
+  }
+  if ('vatNumber' in data) {
+    if (cleared(data.vatNumber)) data.vatNumber = null;
+    else if (!(data.vatNumber = normalizeVatNumber(data.vatNumber))) throw invalid('vatNumber must be a valid BTW-id (e.g. NL123456789B01)');
+  }
+  if ('invoiceIban' in data) {
+    if (cleared(data.invoiceIban)) data.invoiceIban = null;
+    else if (!(data.invoiceIban = normalizeIban(data.invoiceIban))) throw invalid('invoiceIban must be a valid IBAN');
+  }
+  if ('vatRateBps' in data) {
+    const n = Number(data.vatRateBps);
+    if (!Number.isInteger(n) || n < 0 || n > 3000) throw invalid('vatRateBps must be a whole number of basis points between 0 and 3000 (2100 = 21%)');
+    data.vatRateBps = n;
   }
 
   if ('preferredPaymentCollection' in data) {

@@ -34,6 +34,8 @@ function portalRoutesFor(resolveBusiness) {
 
   router.get('/bookings', controller.listBookings);
   router.get('/bookings/:id', controller.getBooking);
+  router.get('/bookings/:id/invoice', controller.getInvoice);
+  router.get('/bookings/:id/invoice/html', controller.getInvoiceHtml);
   router.post('/bookings/:id/cancel', controller.cancelBooking);
   router.post(
     '/bookings/:id/reschedule',

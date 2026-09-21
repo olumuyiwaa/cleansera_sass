@@ -5,6 +5,7 @@ const { toPublicBranding } = require('../../lib/branding');
 const { depositHoldMinutes } = require('../../lib/depositHold');
 const { assertWithinBusinessHours } = require('../../lib/businessHours');
 const { withBusinessLock } = require('../../lib/bookingLock');
+const { vatRateFor, splitGross } = require('../../lib/vat');
 
 /**
  * Creates the deposit Checkout Session for a freshly-created booking, when
@@ -334,6 +335,11 @@ async function quote(businessId, {
   const { computeDepositCents } = pricing;
   const depositRequiredCents = await computeDepositCents(businessId, quote.priceCents);
 
+  // Prices are VAT-inclusive; tell the client how much of the total is BTW so it
+  // can show "incl. 21% BTW". This never changes the amount charged.
+  const taxBusiness = await prisma.business.findUnique({ where: { id: businessId }, select: { vatRateBps: true } });
+  const vat = splitGross(quote.priceCents, vatRateFor(service, taxBusiness));
+
   const chosen = new Set(addOnIds || []);
   return {
     serviceId,
@@ -350,6 +356,7 @@ async function quote(businessId, {
     coupon: quote.coupon,
     giftCard: quote.giftCard,
     depositRequiredCents: depositRequiredCents || 0,
+    tax: { pricesIncludeVat: true, vatRateBps: vat.vatRateBps, vatCents: vat.vatCents, netCents: vat.netCents },
   };
 }
 

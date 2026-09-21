@@ -150,6 +150,19 @@ model Business {
   preferredPaymentCollection PreferredPaymentCollection @default(BOTH)
   offlinePaymentInstructions String?                    @db.Text
 
+  // Invoicing / BTW. Prices in CleanSera are VAT-INCLUSIVE (consumer prices in
+  // NL must be); invoices extract the VAT from the gross amount. Default 21%
+  // is the Dutch standard rate. Required (kvk + vat number) before an invoice
+  // can be issued.
+  legalName  String?
+  kvkNumber  String?
+  vatNumber  String?
+  invoiceIban String?
+  vatRateBps Int     @default(2100)
+
+  invoices       Invoice[]
+  invoiceCounter InvoiceCounter?
+
   branding             BusinessBranding?
   addresses            BusinessAddress[]
   serviceAreas         ServiceArea[]
@@ -686,6 +699,7 @@ model CleanerAvailability {
 // ============================================================
 
 model Customer {
+  invoices Invoice[]
   id           String   @id @default(cuid())
   businessId   String
   business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
@@ -766,6 +780,8 @@ model Service {
   estimatedMinutes Int
   isActive         Boolean      @default(true)
   createdAt        DateTime     @default(now())
+  // Overrides Business.vatRateBps for this service (e.g. 900 = 9%). Null = use the business default.
+  vatRateBps       Int?
 
   addOns             ServiceAddOn[]
   bookings           Booking[]
@@ -850,6 +866,7 @@ model RecurringSchedule {
 }
 
 model Booking {
+  invoice Invoice?
   id                      String             @id @default(cuid())
   businessId              String
   business                Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
@@ -1403,4 +1420,51 @@ model ComplianceAudit {
 
   @@index([businessId])
   @@index([businessId, status])
+}
+
+// ── Invoices (customer-facing, BTW) ─────────────────────────────────────────
+// One invoice per booking. Numbers are consecutive per business (Dutch tax
+// rules require a gapless sequence) and issued invoices are never edited or
+// deleted: corrections are made with a credit note. Both relations are
+// RESTRICT so a booking/customer with an invoice cannot be deleted (fiscal
+// retention: 7 years).
+model Invoice {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Restrict)
+  bookingId  String   @unique
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  sequence Int
+  number   String
+
+  currency   String
+  vatRateBps Int
+  netCents   Int
+  vatCents   Int
+  grossCents Int
+
+  // Snapshots taken at issue time so later edits to the business/customer
+  // never change an issued invoice.
+  supplier Json
+  customerSnapshot Json
+  lines    Json
+
+  issuedAt  DateTime  @default(now())
+  dueAt     DateTime?
+  paidAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([businessId, sequence])
+  @@unique([businessId, number])
+  @@index([businessId, issuedAt])
+  @@index([customerId])
+}
+
+model InvoiceCounter {
+  businessId   String   @id
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  lastSequence Int      @default(0)
 }
