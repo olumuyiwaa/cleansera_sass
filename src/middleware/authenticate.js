@@ -27,14 +27,18 @@ async function authenticate(req, res, next) {
     if (payload.businessId) {
       const membership = await prisma.businessMember.findFirst({
         where: { businessId: payload.businessId, userId: user.id, isActive: true },
+        include: { business: { select: { isActive: true } } },
       });
+      if (membership && membership.business && membership.business.isActive === false) return suspended(res);
       if (membership) {
         businessId = membership.businessId;
         businessRole = membership.role;
       } else {
         const cleaner = await prisma.cleanerProfile.findFirst({
           where: { businessId: payload.businessId, userId: user.id, status: 'ACTIVE' },
+          include: { business: { select: { isActive: true } } },
         });
+        if (cleaner && cleaner.business && cleaner.business.isActive === false) return suspended(res);
         if (cleaner) {
           businessId = cleaner.businessId;
           businessRole = 'CLEANER';
@@ -48,6 +52,16 @@ async function authenticate(req, res, next) {
   } catch (err) {
     return error(res, 401, 'Invalid or expired token');
   }
+}
+
+// Deactivating a business (super-admin) only closed the public widget: its staff
+// and cleaners kept full access. Now every authenticated request is refused.
+function suspended(res) {
+  return res.status(403).json({
+    success: false,
+    message: 'This business account is suspended. Please contact support.',
+    errors: { code: 'BUSINESS_SUSPENDED' },
+  });
 }
 
 /** Restricts a route to one or more business-scoped roles (or SUPER_ADMIN, always allowed). */

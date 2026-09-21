@@ -8,8 +8,8 @@ const router = express.Router();
 
 router.use(authenticate, scopeToBusiness);
 
-router.get('/', controller.list);
-router.get('/kpis', controller.kpis);
+router.get('/', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.list);
+router.get('/kpis', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.kpis);
 router.get('/revenue', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.revenue);
 router.get('/revenue/export', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), requirePlanFeature('reportExports', 'Report exports'), controller.revenueExport);
 router.get('/cleaner-performance', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.cleanerPerf);

@@ -3,6 +3,7 @@ const { getPublicUrl, getPublicUploadUrl } = require('../../config/storage');
 const { toPublicBranding } = require('../../lib/branding');
 const crypto = require('crypto');
 const { pick } = require('../../utils/pick');
+const { isValidTimeZone } = require('../../utils/timezone');
 const { normalizeKvk, normalizeVatNumber, normalizeIban } = require('../../lib/taxIdentifiers');
 const { PUBLIC_IMAGE_TYPES, prefixes, assertKeyUnderPrefix, assertContentType } = require('../../lib/storageKeys');
 
@@ -23,6 +24,11 @@ async function listLocations(parentBusinessId) {
 }
 
 async function createLocation(parentBusinessId, actorUserId, { name, subdomain, timezone }) {
+  if (timezone && !isValidTimeZone(timezone)) {
+    const err = new Error('timezone must be a valid IANA time zone, e.g. Europe/Amsterdam');
+    err.status = 422;
+    throw err;
+  }
   const parent = await prisma.business.findUnique({ where: { id: parentBusinessId } });
   if (!parent) {
     const err = new Error('Business not found');
@@ -139,6 +145,13 @@ async function updateBusiness(businessId, patch) {
       }
     }
     data.currency = code;
+  }
+
+  // An invalid zone would make slot generation throw for every public request of this business.
+  if ('timezone' in data && !isValidTimeZone(data.timezone)) {
+    const err = new Error('timezone must be a valid IANA time zone, e.g. Europe/Amsterdam');
+    err.status = 422;
+    throw err;
   }
 
   // Tax identity: blank clears the field, anything else must be valid.

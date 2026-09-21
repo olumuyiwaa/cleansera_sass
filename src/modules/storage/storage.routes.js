@@ -9,7 +9,7 @@ const router = express.Router();
 
 router.use(authenticate, scopeToBusiness);
 
-router.get('/', controller.list);
+router.get('/', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.list);
 router.post('/', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), [body('bookingId').notEmpty(), body('storageKey').notEmpty()], validate, controller.create);
 router.delete('/:id', requireRole('BUSINESS_OWNER', 'BUSINESS_MANAGER'), controller.remove);
 

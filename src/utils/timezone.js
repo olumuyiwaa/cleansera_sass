@@ -89,4 +89,15 @@ function advanceRunDate(fromDate, frequency, startTime, timeZone = 'UTC') {
   return zonedWallTimeToUtc(parts.year, parts.month, parts.day + dayOffset, hh, mm || 0, timeZone);
 }
 
-module.exports = { computeInitialRunDate, advanceRunDate, getZonedParts, zonedWallTimeToUtc, getTimezoneOffsetMinutes };
+/** True for an IANA zone name the runtime knows ("Europe/Amsterdam"). An invalid one makes every date calculation for that business throw. */
+function isValidTimeZone(tz) {
+  if (typeof tz !== 'string' || !tz.trim()) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { isValidTimeZone, computeInitialRunDate, advanceRunDate, getZonedParts, zonedWallTimeToUtc, getTimezoneOffsetMinutes };
