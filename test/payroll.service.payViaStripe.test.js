@@ -22,6 +22,7 @@ const payrollService = require('../src/modules/payroll/payroll.service');
 describe('payroll.service.payViaStripe', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.ENABLE_STRIPE_CLEANER_PAYOUTS = 'true';
     // Mirrors how the real prisma client resolves $transaction: run the
     // callback against a tx object whose methods we can assert on.
     mockPrisma.$transaction.mockImplementation(async (fn) =>
@@ -116,5 +117,12 @@ describe('payroll.service.payViaStripe', () => {
       status: 402,
     });
     expect(mockPrisma.payout.update).not.toHaveBeenCalled();
+  });
+
+  test('is refused (501) unless ENABLE_STRIPE_CLEANER_PAYOUTS is on', async () => {
+    delete process.env.ENABLE_STRIPE_CLEANER_PAYOUTS;
+    await expect(payrollService.payViaStripe('biz1', 'user1', 'po1')).rejects.toMatchObject({ status: 501 });
+    expect(mockPrisma.payout.findFirst).not.toHaveBeenCalled();
+    expect(payCleanerTransfer).not.toHaveBeenCalled();
   });
 });

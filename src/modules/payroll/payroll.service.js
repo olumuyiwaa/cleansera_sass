@@ -347,6 +347,17 @@ async function listPayouts(businessId, { cleanerId, status } = {}) {
  * than silently falling back to a manual record if either hasn't.
  */
 async function payViaStripe(businessId, actorUserId, payoutId) {
+  // Job payments are direct charges on the business's own Stripe account, so a
+  // cleaner payout would have to be a Transfer created *as* that connected
+  // account. Stripe only lets the platform create Transfers to connected
+  // accounts, so this path is off until it has been verified end to end in
+  // test mode (or replaced by separate-charges-and-transfers). Use manual
+  // "mark as paid" meanwhile.
+  if (String(process.env.ENABLE_STRIPE_CLEANER_PAYOUTS || '').toLowerCase() !== 'true') {
+    const err = new Error('Paying cleaners through Stripe is not enabled. Mark the payout as paid once you have paid the cleaner.');
+    err.status = 501;
+    throw err;
+  }
   const payout = await prisma.payout.findFirst({
     where: { id: payoutId, businessId },
     include: { cleaner: { include: { user: true } }, business: true },

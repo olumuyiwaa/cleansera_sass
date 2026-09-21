@@ -6,20 +6,26 @@ function defaultCurrency() {
   return (process.env.DEFAULT_CURRENCY || 'eur').toLowerCase();
 }
 
-// Payment methods offered at checkout. iDEAL is the dominant online payment
-// method in the Netherlands and only works in EUR; it must also be switched on
-// in the platform's Stripe payment-method settings. Override with
-// CHECKOUT_PAYMENT_METHODS (comma separated, e.g. "card,ideal,bancontact").
+// Payment methods offered at checkout. Job payments are DIRECT charges on the
+// business's own connected account, so which methods appear (card, iDEAL, ...)
+// is governed by that account's payment-method settings. Leave
+// CHECKOUT_PAYMENT_METHODS unset to use Stripe's dynamic payment methods
+// (recommended: iDEAL then shows up automatically for EUR when the account has
+// it enabled). Set it (comma separated, e.g. "card,ideal") only to force a
+// fixed list; EUR-only methods are then dropped for other currencies.
 const EUR_ONLY_METHODS = ['ideal', 'bancontact', 'sepa_debit', 'eps', 'p24'];
 function checkoutPaymentMethods(currency) {
-  const configured = (process.env.CHECKOUT_PAYMENT_METHODS || 'card,ideal')
-    .split(',')
-    .map((m) => m.trim())
-    .filter(Boolean);
+  const raw = process.env.CHECKOUT_PAYMENT_METHODS;
+  if (!raw || !raw.trim()) return undefined;
+  const configured = raw.split(',').map((m) => m.trim()).filter(Boolean);
   const isEur = (currency || defaultCurrency()).toLowerCase() === 'eur';
   const methods = isEur ? configured : configured.filter((m) => !EUR_ONLY_METHODS.includes(m));
   return methods.length ? methods : ['card'];
 }
+const paymentMethodTypes = (currency) => {
+  const methods = checkoutPaymentMethods(currency);
+  return methods ? { payment_method_types: methods } : {};
+};
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', { apiVersion: '2022-11-15' });
 
@@ -136,14 +142,36 @@ async function createBillingPortalSession(stripeCustomerId, returnUrl) {
   });
 }
 
+/**
+ * Stripe issues a separate signing secret per webhook endpoint, and events for
+ * connected accounts (account.updated, and every direct-charge event) arrive on
+ * a "Connect" endpoint while platform events arrive on an "Account" endpoint.
+ * List every secret in STRIPE_WEBHOOK_SECRETS (comma separated); the legacy
+ * single STRIPE_WEBHOOK_SECRET is still honoured. An event is accepted if any
+ * of them verifies it.
+ */
+function webhookSecrets() {
+  return [process.env.STRIPE_WEBHOOK_SECRETS, process.env.STRIPE_WEBHOOK_SECRET]
+    .filter(Boolean)
+    .join(',')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
 async function retrieveEvent(rawBody, sig) {
-  if (!process.env.STRIPE_WEBHOOK_SECRET) return null;
-  try {
-    return stripe.webhooks.constructEvent(rawBody, sig, process.env.STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
-    logger.error('stripe webhook verification failed', err);
-    throw err;
+  const secrets = webhookSecrets();
+  if (secrets.length === 0) return null;
+  let lastErr;
+  for (const secret of secrets) {
+    try {
+      return stripe.webhooks.constructEvent(rawBody, sig, secret);
+    } catch (err) {
+      lastErr = err;
+    }
   }
+  logger.error('stripe webhook verification failed', { message: lastErr && lastErr.message });
+  throw lastErr;
 }
 
 /**
@@ -255,14 +283,18 @@ async function createCleanerConnectAccountAndLink(user, { refreshUrl, returnUrl 
  * Connect balance to the cleaner's own connected account.
  *
  * This is deliberately not a transfer from the platform's own balance.
- * Job payments settle on the business's connected account (see
- * createBookingCheckoutSession's transfer_data.destination) — CleanSera's
+ * Job payments are direct charges on the business's connected account
+ * (see createDirectCheckoutSession) — CleanSera's
  * platform account only ever holds the optional application fee, so it has
  * no cleaner-payroll funds to move. Passing { stripeAccount:
  * businessConnectedAccountId } makes Stripe create the Transfer as that
  * connected account, moving money out of *its* balance to the cleaner's
  * connected account — the same "platform-facilitated, connected-account-
  * funded" pattern used for marketplaces paying sub-recipients.
+ *
+ * NOTE: unverified. Stripe may only allow the platform to create Transfers to
+ * connected accounts; payroll.service gates this behind
+ * ENABLE_STRIPE_CLEANER_PAYOUTS until it is proven in test mode.
  *
  * Throws a 402 if the business's connected balance can't cover it (Stripe's
  * balance_insufficient), so the caller can surface "insufficient balance,
@@ -324,87 +356,22 @@ async function payCleanerTransfer({
 }
 
 /**
- * Create a one-time Checkout Session for a booking, using Stripe Connect
- * destination charges: the customer's payment settles on the platform
- * account only in transit — funds are transferred to the business's
- * connected account (transfer_data.destination) minus an optional platform
- * application fee. CleanSera never holds job-payment funds; it only ever
- * collects application_fee_amount, the same as the subscription fee model.
- * metadata.bookingId is used by the webhook to mark the booking PAID.
+ * Creates a one-time Checkout Session as a DIRECT charge on the business's own
+ * connected account: the business is the merchant of record, the payment (and
+ * any dispute or refund) lives on its account, it pays Stripe's fees, and the
+ * money never sits in CleanSera's balance. CleanSera only ever collects
+ * application_fee_amount, which is 0 by default (see PLATFORM_APPLICATION_FEE_BPS).
+ *
+ * This replaces destination charges (transfer_data.destination), under which the
+ * platform was the merchant of record, carried disputes and paid the processing
+ * fees - while the pricing page promises a 0% fee and that money never routes
+ * through CleanSera.
+ *
+ * metadata.bookingId / purpose are read back by the webhook to mark the booking
+ * paid; events for these sessions arrive with event.account set.
  */
-async function createBookingCheckoutSession({
-  bookingId,
-  businessId,
-  connectedAccountId,
-  amountCents,
-  currency = defaultCurrency(),
-  customerEmail,
-  successUrl,
-  cancelUrl,
-  description,
-}) {
-  if (!process.env.STRIPE_SECRET_KEY) {
-    const err = new Error('STRIPE_SECRET_KEY is not configured');
-    err.status = 503;
-    throw err;
-  }
-  if (!connectedAccountId) {
-    const err = new Error('Business has not completed Stripe Connect onboarding');
-    err.status = 402;
-    throw err;
-  }
-  if (!amountCents || amountCents < 50) {
-    const err = new Error('Amount must be at least 50 minor units');
-    err.status = 422;
-    throw err;
-  }
-
-  const applicationFeeAmount = Math.floor((amountCents * getApplicationFeeBps()) / 10000);
-
-  const session = await stripe.checkout.sessions.create({
-    mode: 'payment',
-    payment_method_types: checkoutPaymentMethods(currency),
-    line_items: [
-      {
-        price_data: {
-          currency: (currency || defaultCurrency()).toLowerCase(),
-          product_data: {
-            name: description || `Cleaning booking ${bookingId}`,
-          },
-          unit_amount: amountCents,
-        },
-        quantity: 1,
-      },
-    ],
-    payment_intent_data: {
-      transfer_data: { destination: connectedAccountId },
-      // Omit entirely when 0 so a $0-fee deployment doesn't send a
-      // meaningless application_fee_amount: 0 to Stripe.
-      ...(applicationFeeAmount > 0 ? { application_fee_amount: applicationFeeAmount } : {}),
-    },
-    customer_email: customerEmail || undefined,
-    success_url: successUrl || `${process.env.APP_URL || 'http://localhost:3000'}/portal?payment=success&bookingId=${bookingId}`,
-    cancel_url: cancelUrl || `${process.env.APP_URL || 'http://localhost:3000'}/portal?payment=cancelled&bookingId=${bookingId}`,
-    metadata: {
-      bookingId,
-      businessId,
-      purpose: 'job_payment',
-    },
-  });
-
-  return session;
-}
-
-/**
- * Creates a Checkout Session for a one-time charge unrelated to the main
- * job payment — a deposit taken at booking time, or a post-completion tip.
- * Shares the same Connect destination-charge shape as
- * createBookingCheckoutSession (funds settle on the business's connected
- * account, minus an optional platform fee), just parameterized by purpose
- * and amount so callers don't have to duplicate the Stripe call shape.
- */
-async function createAncillaryCheckoutSession({
-  purpose, // 'deposit' | 'tip'
+async function createDirectCheckoutSession({
+  purpose,
   bookingId,
   businessId,
   connectedAccountId,
@@ -415,6 +382,7 @@ async function createAncillaryCheckoutSession({
   cancelUrl,
   description,
   applyPlatformFee = true,
+  expiresInMinutes,
 }) {
   if (!process.env.STRIPE_SECRET_KEY) {
     const err = new Error('STRIPE_SECRET_KEY is not configured');
@@ -433,53 +401,82 @@ async function createAncillaryCheckoutSession({
   }
 
   const applicationFeeAmount = applyPlatformFee ? Math.floor((amountCents * getApplicationFeeBps()) / 10000) : 0;
+  const base = process.env.APP_URL || 'http://localhost:3000';
 
-  const session = await stripe.checkout.sessions.create({
-    mode: 'payment',
-    payment_method_types: checkoutPaymentMethods(currency),
-    line_items: [
-      {
-        price_data: {
-          currency: (currency || defaultCurrency()).toLowerCase(),
-          product_data: { name: description || `Cleaning ${purpose} ${bookingId}` },
-          unit_amount: amountCents,
+  return stripe.checkout.sessions.create(
+    {
+      mode: 'payment',
+      ...paymentMethodTypes(currency),
+      line_items: [
+        {
+          price_data: {
+            currency: (currency || defaultCurrency()).toLowerCase(),
+            product_data: { name: description || `Cleaning ${purpose} ${bookingId}` },
+            unit_amount: amountCents,
+          },
+          quantity: 1,
         },
-        quantity: 1,
-      },
-    ],
-    payment_intent_data: {
-      transfer_data: { destination: connectedAccountId },
-      ...(applicationFeeAmount > 0 ? { application_fee_amount: applicationFeeAmount } : {}),
+      ],
+      // Omit entirely when 0 so a 0%-fee deployment never sends application_fee_amount: 0.
+      ...(applicationFeeAmount > 0 ? { payment_intent_data: { application_fee_amount: applicationFeeAmount } } : {}),
+      customer_email: customerEmail || undefined,
+      success_url: successUrl || `${base}/portal?payment=success&bookingId=${bookingId}`,
+      cancel_url: cancelUrl || `${base}/portal?payment=cancelled&bookingId=${bookingId}`,
+      ...(expiresInMinutes ? { expires_at: Math.floor(Date.now() / 1000) + Math.round(expiresInMinutes * 60) } : {}),
+      metadata: { bookingId, businessId, purpose },
     },
-    customer_email: customerEmail || undefined,
-    success_url: successUrl || `${process.env.APP_URL || 'http://localhost:3000'}/portal?payment=success&bookingId=${bookingId}`,
-    cancel_url: cancelUrl || `${process.env.APP_URL || 'http://localhost:3000'}/portal?payment=cancelled&bookingId=${bookingId}`,
-    metadata: { bookingId, businessId, purpose },
-  });
+    { stripeAccount: connectedAccountId }
+  );
+}
 
-  return session;
+/** Checkout Session for the job payment itself (or the balance still owed). */
+async function createBookingCheckoutSession(args) {
+  return createDirectCheckoutSession({ ...args, purpose: 'job_payment', description: args.description || `Cleaning booking ${args.bookingId}` });
+}
+
+/** Deposit taken at booking time, or a post-completion tip. */
+async function createAncillaryCheckoutSession(args) {
+  return createDirectCheckoutSession(args);
 }
 
 /**
- * Refunds a prior charge, either fully (amountCents omitted) or partially —
- * partial is what cancellationPolicy.evaluateCancellation asks for when a
- * cancellation fee is owed. Returns null (rather than throwing) when there's
- * no payment intent to refund against, so callers can treat "nothing to
- * refund" as a normal outcome instead of an error path.
+ * Expires an unpaid Checkout Session so a cancelled booking's payment link
+ * cannot be paid afterwards. Best effort: an already-completed or expired
+ * session is not an error.
  */
-async function createRefund({ paymentIntentId, amountCents, reason }) {
+async function expireCheckoutSession(sessionId, connectedAccountId) {
+  if (!sessionId || !connectedAccountId) return null;
+  try {
+    return await stripe.checkout.sessions.expire(sessionId, {}, { stripeAccount: connectedAccountId });
+  } catch (err) {
+    logger.warn('could not expire checkout session', { sessionId, error: err.message });
+    return null;
+  }
+}
+
+/**
+ * Refunds a prior charge, fully (amountCents omitted) or partially. Returns
+ * null when there is no payment intent to refund against.
+ *
+ * Pass connectedAccountId for direct charges (the normal case now): the refund
+ * is created on the business's account. Without it the legacy destination-charge
+ * behaviour applies (reverse_transfer), which is only correct for payments made
+ * before the switch to direct charges.
+ */
+async function createRefund({ paymentIntentId, amountCents, reason, connectedAccountId, idempotencyKey }) {
   if (!paymentIntentId) return null;
-  return stripe.refunds.create({
+  const params = {
     payment_intent: paymentIntentId,
     ...(amountCents != null ? { amount: amountCents } : {}),
     reason: reason || 'requested_by_customer',
-    // These are destination charges: the money moved to the business's
-    // connected account. Without reverse_transfer the refund is paid out of
-    // the platform's balance and the business keeps the funds, so every
-    // refund silently costs CleanSera money.
-    reverse_transfer: true,
-    ...(getApplicationFeeBps() > 0 ? { refund_application_fee: true } : {}),
-  });
+  };
+  const opts = {
+    ...(connectedAccountId ? { stripeAccount: connectedAccountId } : {}),
+    ...(idempotencyKey ? { idempotencyKey } : {}),
+  };
+  if (!connectedAccountId) params.reverse_transfer = true;
+  if (getApplicationFeeBps() > 0) params.refund_application_fee = true;
+  return stripe.refunds.create(params, opts);
 }
 
 module.exports = {
@@ -498,6 +495,8 @@ module.exports = {
   payCleanerTransfer,
   createBookingCheckoutSession,
   createAncillaryCheckoutSession,
+  expireCheckoutSession,
   createRefund,
+  webhookSecrets,
   stripe,
 };

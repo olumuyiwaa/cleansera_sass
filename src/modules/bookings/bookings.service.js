@@ -2,7 +2,7 @@ const prisma = require('../../config/database');
 const { audit } = require('../../utils/audit');
 const notifications = require('../notifications/notifications.service');
 const logger = require('../../config/logger');
-const { createBookingCheckoutSession, createAncillaryCheckoutSession, createRefund } = require('../../lib/stripeClient');
+const { createBookingCheckoutSession, createAncillaryCheckoutSession, createRefund, expireCheckoutSession } = require('../../lib/stripeClient');
 const { computeInitialRunDate } = require('../../utils/timezone');
 const { evaluateCancellation } = require('../../lib/cancellationPolicy');
 const { amountDueCents, jobPaymentCents } = require('../../lib/paymentMath');
@@ -36,7 +36,7 @@ async function listBookings(businessId, { status } = {}, requester = null) {
 }
 
 async function getBookingById(businessId, id, requester = null) {
-  const b = await prisma.booking.findFirst({ where: { id, businessId }, include: { customer: true, service: true, assignments: true } });
+  const b = await prisma.booking.findFirst({ where: { id, businessId }, include: { customer: true, service: true, assignments: true, business: { select: { stripeConnectedAccountId: true } } } });
   if (!b) {
     const err = new Error('Booking not found');
     err.status = 404;
@@ -662,6 +662,10 @@ async function cancelBooking(businessId, bookingId, actorUserId, reason, options
         paymentIntentId: item.paymentIntentId,
         amountCents: item.amountCents,
         reason: 'requested_by_customer',
+        // Direct charges live on the business's account, so the refund does too.
+        connectedAccountId: booking.business && booking.business.stripeConnectedAccountId,
+        // A retried cancellation must not refund the same charge twice.
+        idempotencyKey: `cancel-refund:${bookingId}:${item.paymentIntentId}:${item.amountCents}`,
       });
       if (r) {
         refunds.push(r);
@@ -723,6 +727,19 @@ async function cancelBooking(businessId, bookingId, actorUserId, reason, options
     }
     return b;
   });
+
+  // Expire any unpaid payment links so a cancelled booking cannot be paid
+  // afterwards (the webhook would otherwise mark it PAID). Best effort.
+  const connectedAccountId = booking.business && booking.business.stripeConnectedAccountId;
+  if (connectedAccountId) {
+    if (booking.stripeCheckoutSessionId && booking.paymentStatus !== 'PAID') {
+      await expireCheckoutSession(booking.stripeCheckoutSessionId, connectedAccountId);
+    }
+    if (booking.stripeDepositSessionId && !booking.depositPaidAt) {
+      await expireCheckoutSession(booking.stripeDepositSessionId, connectedAccountId);
+    }
+  }
+
   await audit({
     businessId,
     actorUserId,

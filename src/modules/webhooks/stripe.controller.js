@@ -26,6 +26,30 @@ function mapStripeStatus(status) {
   }
 }
 
+/**
+ * Job payments are direct charges, so their events arrive with event.account =
+ * the business's connected account. A booking may only be touched by events
+ * from ITS business's account: metadata alone must not let one tenant's
+ * Stripe account mark another tenant's booking paid. Events without
+ * event.account (platform-level, e.g. legacy destination charges) pass.
+ */
+async function accountMatchesBooking(event, booking) {
+  if (!event.account) return true;
+  const biz = await prisma.business.findUnique({
+    where: { id: booking.businessId },
+    select: { stripeConnectedAccountId: true },
+  });
+  if (biz && biz.stripeConnectedAccountId === event.account) return true;
+  logger.error('Stripe event account does not match the booking business; ignored', {
+    eventId: event.id,
+    eventAccount: event.account,
+    bookingId: booking.id,
+  });
+  return false;
+}
+
+const paymentIntentIdOf = (pi) => (typeof pi === 'string' ? pi : (pi && pi.id) || null);
+
 const toDate = (unixSeconds) => (unixSeconds ? new Date(unixSeconds * 1000) : null);
 
 /** Copies the fields we track from a Stripe subscription object onto our row. */
@@ -92,7 +116,7 @@ async function handle(req, res) {
   // No secret configured: refuse rather than acknowledge. Answering 200 made a
   // misconfigured production deploy look healthy while dropping every event.
   if (!event) {
-    logger.error('Stripe webhook received but STRIPE_WEBHOOK_SECRET is not configured');
+    logger.error('Stripe webhook received but no signing secret is configured (STRIPE_WEBHOOK_SECRETS / STRIPE_WEBHOOK_SECRET)');
     return res.status(503).json({ received: false, message: 'Webhook signing secret not configured' });
   }
 
@@ -173,7 +197,7 @@ async function handle(req, res) {
         logger.info(`Checkout session ${obj.id} completed with payment_status=${obj.payment_status}; waiting for async confirmation`);
       } else if (meta.purpose === 'job_payment' && meta.bookingId) {
         const booking = await prisma.booking.findUnique({ where: { id: meta.bookingId } });
-        if (booking && booking.paymentStatus !== 'PAID') {
+        if (booking && booking.paymentStatus !== 'PAID' && (await accountMatchesBooking(event, booking))) {
           const paymentIntentId =
               typeof obj.payment_intent === 'string'
                   ? obj.payment_intent
@@ -212,7 +236,7 @@ async function handle(req, res) {
         }
       } else if (meta.purpose === 'deposit' && meta.bookingId) {
         const booking = await prisma.booking.findUnique({ where: { id: meta.bookingId } });
-        if (booking && !booking.depositPaidAt) {
+        if (booking && !booking.depositPaidAt && (await accountMatchesBooking(event, booking))) {
           const paymentIntentId =
               typeof obj.payment_intent === 'string' ? obj.payment_intent : obj.payment_intent?.id || null;
 
@@ -238,7 +262,7 @@ async function handle(req, res) {
         }
       } else if (meta.purpose === 'tip' && meta.bookingId) {
         const booking = await prisma.booking.findUnique({ where: { id: meta.bookingId } });
-        if (booking && !booking.tipPaidAt) {
+        if (booking && !booking.tipPaidAt && (await accountMatchesBooking(event, booking))) {
           const paymentIntentId =
               typeof obj.payment_intent === 'string' ? obj.payment_intent : obj.payment_intent?.id || null;
 
@@ -261,6 +285,80 @@ async function handle(req, res) {
             metadata: { sessionId: obj.id, paymentIntentId, amountTotal: obj.amount_total },
           });
         }
+      }
+    } else if (type === 'checkout.session.expired') {
+      // An unpaid deposit session ran out: release the slot it was holding.
+      // Only a still-REQUESTED, unpaid booking is cancelled - if staff already
+      // confirmed it by hand, that decision stands.
+      const meta = obj.metadata || {};
+      if (meta.purpose === 'deposit' && meta.bookingId) {
+        const booking = await prisma.booking.findUnique({ where: { id: meta.bookingId } });
+        if (
+          booking &&
+          booking.stripeDepositSessionId === obj.id &&
+          !booking.depositPaidAt &&
+          booking.status === 'REQUESTED' &&
+          (await accountMatchesBooking(event, booking))
+        ) {
+          const bookingsService = require('../bookings/bookings.service');
+          await bookingsService.cancelBooking(booking.businessId, booking.id, null, 'Deposit was not paid in time', { waiveFee: true });
+          logger.info('Cancelled booking after its deposit session expired', { bookingId: booking.id, sessionId: obj.id });
+        }
+      }
+    } else if (type === 'charge.dispute.created' || type === 'charge.dispute.closed') {
+      // With direct charges the dispute belongs to the business's Stripe
+      // account; CleanSera's job is to make sure the business notices and that
+      // the cleaner's not-yet-paid earning for the job is put on hold.
+      const pi = paymentIntentIdOf(obj.payment_intent);
+      const booking = pi
+        ? await prisma.booking.findFirst({
+            where: { OR: [{ stripePaymentIntentId: pi }, { stripeDepositPaymentIntentId: pi }, { stripeTipPaymentIntentId: pi }] },
+          })
+        : null;
+      if (booking && (await accountMatchesBooking(event, booking))) {
+        const opened = type === 'charge.dispute.created';
+        const won = !opened && obj.status === 'won';
+        if (opened) {
+          await prisma.cleanerEarning.updateMany({ where: { bookingId: booking.id, status: 'PENDING' }, data: { status: 'VOIDED' } });
+        } else if (won) {
+          await prisma.cleanerEarning.updateMany({ where: { bookingId: booking.id, status: 'VOIDED' }, data: { status: 'PENDING' } });
+        }
+        await audit({
+          businessId: booking.businessId,
+          actorUserId: null,
+          action: opened ? 'PAYMENT_DISPUTE_OPENED' : 'PAYMENT_DISPUTE_CLOSED',
+          entityType: 'Booking',
+          entityId: booking.id,
+          metadata: {
+            disputeId: obj.id,
+            amount: obj.amount,
+            currency: obj.currency,
+            reason: obj.reason,
+            status: obj.status,
+            evidenceDueBy: obj.evidence_details && obj.evidence_details.due_by ? toDate(obj.evidence_details.due_by) : null,
+          },
+        });
+        try {
+          const notifications = require('../notifications/notifications.service');
+          await notifications.notifyMembers(
+            booking.businessId,
+            opened ? 'PAYMENT_DISPUTE_OPENED' : 'PAYMENT_DISPUTE_CLOSED',
+            opened ? 'Payment dispute opened' : `Payment dispute ${obj.status}`,
+            opened
+              ? `A customer disputed the payment for booking ${booking.id}. Respond in your Stripe dashboard before the deadline.`
+              : `The dispute on booking ${booking.id} was closed as "${obj.status}".`
+          );
+        } catch (notifyErr) {
+          logger.warn('failed to notify about dispute', { error: notifyErr.message });
+        }
+      }
+    } else if (type === 'account.application.deauthorized') {
+      // The business disconnected CleanSera from its Stripe account.
+      if (event.account) {
+        await prisma.business.updateMany({
+          where: { stripeConnectedAccountId: event.account },
+          data: { stripeChargesEnabled: false, stripePayoutsEnabled: false },
+        });
       }
     } else if (type === 'account.updated') {
       // Fires as a connected business completes/updates their Stripe Connect

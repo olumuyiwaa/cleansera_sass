@@ -2,6 +2,7 @@ const prisma = require('../../config/database');
 const { isWithinServiceAreas } = require('../../utils/geo');
 const { createAncillaryCheckoutSession } = require('../../lib/stripeClient');
 const { toPublicBranding } = require('../../lib/branding');
+const { depositHoldMinutes } = require('../../lib/depositHold');
 
 /**
  * Creates the deposit Checkout Session for a freshly-created booking, when
@@ -103,6 +104,9 @@ async function maybeCreateDepositSession(businessId, booking) {
     currency: business.currency,
     customerEmail: customer?.email || undefined,
     description: `Deposit for booking ${booking.id}`,
+    // The slot is held only while the customer can still pay; an unpaid
+    // deposit session expiring cancels the booking (webhook + sweeper).
+    expiresInMinutes: depositHoldMinutes(),
   });
 
   await prisma.booking.update({

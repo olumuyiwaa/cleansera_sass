@@ -9,6 +9,7 @@
     "notification-worker": "node src/workers/notificationWorker.js",
     "recurring-worker": "node src/workers/recurringWorker.js",
     "recurring-daemon": "node src/workers/recurringDaemon.js",
+    "sweep-deposits": "node src/workers/depositSweeper.js",
     "test:unit": "jest --runInBand",
     "test:queue": "node scripts/queueTest.js",
     "test": "npm run test:unit && npm run test:queue",

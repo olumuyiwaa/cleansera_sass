@@ -15,13 +15,14 @@ jest.mock('../src/lib/stripeClient', () => ({
   createBookingCheckoutSession: jest.fn(),
   createAncillaryCheckoutSession: jest.fn(),
   createRefund: jest.fn(),
+  expireCheckoutSession: jest.fn(),
 }));
 jest.mock('../src/lib/cancellationPolicy', () => ({
   evaluateCancellation: jest.fn(),
 }));
 
 const mockPrisma = require('../src/config/database.js');
-const { createRefund } = require('../src/lib/stripeClient');
+const { createRefund, expireCheckoutSession } = require('../src/lib/stripeClient');
 const { evaluateCancellation } = require('../src/lib/cancellationPolicy');
 const bookingsService = require('../src/modules/bookings/bookings.service');
 
@@ -65,6 +66,8 @@ describe('bookings.service.cancelBooking', () => {
       paymentIntentId: 'pi_job_123',
       amountCents: 5000,
       reason: 'requested_by_customer',
+      connectedAccountId: undefined,
+      idempotencyKey: 'cancel-refund:bk1:pi_job_123:5000',
     });
     expect(mockPrisma.booking.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -173,5 +176,26 @@ describe('bookings.service.cancelBooking', () => {
     mockPrisma.giftCard.findUnique.mockResolvedValue({ id: 'gc1', initialValueCents: 5000, balanceCents: 4500 });
     await bookingsService.cancelBooking('biz1', 'bk1', 'user1', 'reason');
     expect(mockPrisma.giftCard.update).toHaveBeenCalledWith({ where: { id: 'gc1' }, data: { balanceCents: 5000 } });
+  });
+
+  test('refunds go to the business connected account and unpaid payment links are expired', async () => {
+    const booking = {
+      ...existingBooking,
+      paymentStatus: 'DEPOSIT_PAID',
+      depositPaidAt: new Date(),
+      stripeCheckoutSessionId: 'cs_open_job',
+      stripeDepositSessionId: 'cs_paid_dep',
+      business: { stripeConnectedAccountId: 'acct_biz' },
+    };
+    mockPrisma.booking.findFirst.mockResolvedValue(booking);
+    evaluateCancellation.mockResolvedValue({ feeCents: 0, refundCents: 10000, alreadyPaidCents: 10000, ...plan([{ paymentIntentId: 'pi_job_123', amountCents: 10000 }]) });
+    createRefund.mockResolvedValue({ id: 're_x' });
+
+    await bookingsService.cancelBooking('biz1', 'bk1', 'user1', 'x');
+
+    expect(createRefund).toHaveBeenCalledWith(expect.objectContaining({ connectedAccountId: 'acct_biz' }));
+    // the unpaid job link is killed; the deposit session was already paid, so it is left alone
+    expect(expireCheckoutSession).toHaveBeenCalledTimes(1);
+    expect(expireCheckoutSession).toHaveBeenCalledWith('cs_open_job', 'acct_biz');
   });
 });
