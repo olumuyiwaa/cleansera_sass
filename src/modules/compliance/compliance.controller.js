@@ -43,6 +43,16 @@ async function getDocument(req, res, next) {
   }
 }
 
+async function getUploadUrl(req, res, next) {
+  try {
+    const { contentType, filename } = req.body || {};
+    const result = await complianceService.getUploadUrl(getBusinessId(req), { contentType, filename });
+    return success(res, 200, result);
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function createDocument(req, res, next) {
   try {
     const businessId = getBusinessId(req);
@@ -151,6 +161,7 @@ async function updateAudit(req, res, next) {
 module.exports = {
   listDocuments,
   getDocument,
+  getUploadUrl,
   createDocument,
   updateDocument,
   deleteDocument,

@@ -3,6 +3,7 @@ const { audit } = require('../../utils/audit');
 const { getSignedUploadUrl, getSignedDownloadUrl } = require('../../config/storage');
 const cleanersService = require('../cleaners/cleaners.service');
 const stripeClient = require('../../lib/stripeClient');
+const { IMAGE_TYPES, DOCUMENT_TYPES, prefixes, assertKeyUnderPrefix, assertContentType } = require('../../lib/storageKeys');
 
 // Document types a cleaner may submit about themselves. BACKGROUND_CHECK and
 // CONTRACT are issued by the business, not the cleaner, so those stay
@@ -37,7 +38,13 @@ async function getMyProfile(cleaner) {
 async function updateMyProfile(cleaner, { phone, avatarKey }) {
   const data = {};
   if (phone !== undefined) data.phone = phone;
-  if (avatarKey !== undefined) data.avatarKey = avatarKey;
+  if (avatarKey !== undefined) {
+    // null / '' clears the avatar; anything else must be a key this cleaner was
+    // issued (getMyAvatarUploadUrl), not an arbitrary object in the bucket.
+    data.avatarKey = avatarKey
+      ? assertKeyUnderPrefix(avatarKey, prefixes.cleanerAvatar(cleaner.businessId, cleaner.id), 'avatarKey')
+      : null;
+  }
 
   if (Object.keys(data).length === 0) {
     return getMyProfile(cleaner);
@@ -59,8 +66,9 @@ async function updateMyProfile(cleaner, { phone, avatarKey }) {
 
 async function getMyAvatarUploadUrl(cleaner, { contentType, filename } = {}) {
   const safeName = (filename || 'avatar').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const type = assertContentType(contentType || 'image/jpeg', IMAGE_TYPES);
   const key = `businesses/${cleaner.businessId}/cleaners/${cleaner.id}/avatar/${Date.now()}-${safeName}`;
-  const uploadUrl = await getSignedUploadUrl(key, contentType || 'image/jpeg');
+  const uploadUrl = await getSignedUploadUrl(key, type);
   return { uploadUrl, avatarKey: key };
 }
 
@@ -92,13 +100,15 @@ async function listMyDocuments(cleaner) {
 
 async function getMyDocumentUploadUrl(cleaner, { contentType, filename } = {}) {
   const safeName = (filename || 'doc').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const type = assertContentType(contentType, DOCUMENT_TYPES);
   const key = `businesses/${cleaner.businessId}/cleaners/${cleaner.id}/docs/${Date.now()}-${safeName}`;
-  const uploadUrl = await getSignedUploadUrl(key, contentType || 'application/octet-stream');
+  const uploadUrl = await getSignedUploadUrl(key, type);
   return { uploadUrl, storageKey: key };
 }
 
 async function createMyDocument(cleaner, body) {
   const type = SELF_SERVICE_DOC_TYPES.includes(body.type) ? body.type : 'OTHER';
+  assertKeyUnderPrefix(body.storageKey, prefixes.cleanerDocs(cleaner.businessId, cleaner.id));
 
   const doc = await prisma.cleanerDocument.create({
     data: {

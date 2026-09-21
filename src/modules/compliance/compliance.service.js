@@ -2,6 +2,8 @@
 
 // See inventory.service.js's identical comment -- same fix, same reason.
 const prisma = require('../../config/database');
+const { getSignedUploadUrl } = require('../../config/storage');
+const { DOCUMENT_TYPES, prefixes, assertKeyUnderPrefix, assertContentType } = require('../../lib/storageKeys');
 
 class ComplianceService {
   // ─── Documents (SDS etc.) ────────────────────────────────
@@ -30,7 +32,17 @@ class ComplianceService {
     });
   }
 
+  /** Presigned upload URL under this business's compliance prefix. */
+  async getUploadUrl(businessId, { contentType, filename } = {}) {
+    const type = assertContentType(contentType, DOCUMENT_TYPES);
+    const safeName = (filename || 'document').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const key = `${prefixes.compliance(businessId)}${Date.now()}-${safeName}`;
+    const uploadUrl = await getSignedUploadUrl(key, type);
+    return { uploadUrl, storageKey: key };
+  }
+
   async createDocument(businessId, data, uploadedById) {
+    assertKeyUnderPrefix(data.storageKey, prefixes.compliance(businessId));
     return prisma.complianceDocument.create({
       data: {
         ...data,
@@ -45,6 +57,7 @@ class ComplianceService {
       where: { id: docId, businessId },
     });
     if (!existing) throw Object.assign(new Error('Document not found'), { status: 404 });
+    if (data.storageKey !== undefined) assertKeyUnderPrefix(data.storageKey, prefixes.compliance(businessId));
 
     return prisma.complianceDocument.update({
       where: { id: docId },

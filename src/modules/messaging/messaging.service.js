@@ -1,4 +1,5 @@
 const prisma = require('../../config/database');
+const { prefixes, assertKeyUnderPrefix } = require('../../lib/storageKeys');
 
 async function resolveSubjectLabel(subjectType, subjectId) {
   if (subjectType === 'CLEANER') {
@@ -239,6 +240,7 @@ async function listMessages(businessId, conversationId, { page = 1, limit = 50 }
 }
 
 async function postMessage(businessId, conversationId, senderUserId, { body, content, attachmentKey }, requester = null) {
+  if (attachmentKey) assertKeyUnderPrefix(attachmentKey, prefixes.tenant(businessId), 'attachmentKey');
   const text = (body ?? content ?? '').trim();
   if (!text && !attachmentKey) {
     const err = new Error('Message body is required');

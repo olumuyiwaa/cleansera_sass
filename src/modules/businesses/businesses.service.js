@@ -3,6 +3,7 @@ const { getPublicUrl, getPublicUploadUrl } = require('../../config/storage');
 const { toPublicBranding } = require('../../lib/branding');
 const crypto = require('crypto');
 const { pick } = require('../../utils/pick');
+const { PUBLIC_IMAGE_TYPES, prefixes, assertKeyUnderPrefix, assertContentType } = require('../../lib/storageKeys');
 
 const ADDRESS_FIELDS = ['label', 'line1', 'line2', 'city', 'state', 'postalCode', 'country', 'latitude', 'longitude', 'isPrimary'];
 const SERVICE_AREA_FIELDS = ['name', 'centerLat', 'centerLng', 'radiusMeters'];
@@ -212,7 +213,18 @@ function isHttpUrl(value) {
   }
 }
 
-function validateBrandingPayload(payload) {
+function validateBrandingPayload(payload, businessId) {
+  // Branding assets are referenced by key and rendered from a public URL, so a
+  // key must be one this business was issued by brandingUploadUrl.
+  if (businessId) {
+    const brandingPrefix = prefixes.branding(businessId);
+    for (const field of ['logoKey', 'heroImageKey']) {
+      if (payload[field]) assertKeyUnderPrefix(payload[field], brandingPrefix, field);
+    }
+    if (Array.isArray(payload.galleryImageKeys)) {
+      for (const k of payload.galleryImageKeys) assertKeyUnderPrefix(k, brandingPrefix, 'galleryImageKeys');
+    }
+  }
   if (payload.themeStyle !== undefined && !THEME_STYLES.includes(payload.themeStyle)) {
     const err = new Error(`themeStyle must be one of ${THEME_STYLES.join(', ')}`);
     err.status = 422;
@@ -293,13 +305,14 @@ function validateBrandingPayload(payload) {
 // public site can reference the result by a permanent URL forever
 // instead of a signed one that expires.
 async function brandingUploadUrl(businessId, { kind, filename, contentType }) {
+  const type = assertContentType(contentType, PUBLIC_IMAGE_TYPES);
   if (!['logo', 'hero', 'gallery'].includes(kind)) {
     const err = new Error('kind must be one of logo, hero, gallery');
     err.status = 422;
     throw err;
   }
   const key = brandingAssetKey(businessId, kind, filename);
-  const uploadUrl = await getPublicUploadUrl(key, contentType || 'application/octet-stream');
+  const uploadUrl = await getPublicUploadUrl(key, type);
   return { key, uploadUrl, publicUrl: getPublicUrl(key) };
 }
 
@@ -393,7 +406,7 @@ const BRANDING_FIELDS = [
 ];
 
 async function updateBranding(businessId, payload) {
-  validateBrandingPayload(payload);
+  validateBrandingPayload(payload, businessId);
   const data = {};
   for (const field of BRANDING_FIELDS) {
     if (payload[field] !== undefined) data[field] = payload[field];

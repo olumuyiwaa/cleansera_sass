@@ -16,6 +16,7 @@ router.use(authenticate, scopeToBusiness, requireRole('BUSINESS_OWNER', 'BUSINES
 // ─── Documents (SDS, risk assessments, etc.) ──────────────
 router.get('/documents', ctrl.listDocuments);
 router.get('/documents/:id', ctrl.getDocument);
+router.post('/documents/upload-url', ctrl.getUploadUrl);
 router.post('/documents', ctrl.createDocument);
 router.patch('/documents/:id', ctrl.updateDocument);
 router.delete('/documents/:id', ctrl.deleteDocument);
