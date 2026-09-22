@@ -20,6 +20,12 @@ async function resolveBusinessFromHost(req, res, next) {
       business = await prisma.business.findUnique({ where: { subdomain } });
     } else {
       business = await prisma.business.findUnique({ where: { customDomain: host } });
+      // A customDomain row existing is not proof of ownership — only a
+      // completed DNS TXT verification is. Without this check, anyone who
+      // knows (or guesses) another business's chosen custom domain string
+      // could have traffic routed to it before that business ever proved
+      // they control the domain.
+      if (business && business.customDomainStatus !== 'VERIFIED') business = null;
     }
 
     if (!business || !business.isActive) {

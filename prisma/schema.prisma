@@ -110,11 +110,24 @@ enum SubscriptionStatus {
   CANCELED
 }
 
+enum CustomDomainStatus {
+  PENDING
+  VERIFIED
+  FAILED
+}
+
 model Business {
   id           String   @id @default(cuid())
   name         String
   subdomain    String   @unique
   customDomain String?  @unique
+  // Set alongside customDomain when a business adds one. PENDING until the
+  // TXT-record ownership check in domains.service.js passes — until then,
+  // resolveBusinessFromHost.js refuses to route traffic for it and Caddy's
+  // on_demand_tls "ask" hook refuses to issue a certificate for it either.
+  customDomainStatus            CustomDomainStatus?
+  customDomainVerificationToken String?
+  customDomainVerifiedAt        DateTime?
   // Fallback only — every real onboarding path (see registerBusiness in
   // auth.service.js, and businesses.service.createLocation) accepts an
   // explicit timezone and only falls through to this default when none is
@@ -316,6 +329,11 @@ model BusinessPricing {
   // instead of being stuck on the same rate as every other tenant.
   perSqftCents Int?
   perRoomCents Int?
+  // perSqftCents is unit-agnostic rate math ("per unit") despite the name —
+  // this just controls what unit the frontend collects from the customer
+  // and labels the quote with. Default SQM since most tenants are NL-based;
+  // set SQFT per-business for markets that expect it.
+  sizeUnit     SizeUnit         @default(SQM)
 
   // Deposit collected at booking time, before the job is scheduled/assigned.
   // null depositType = no deposit required (today's behavior).
@@ -532,6 +550,12 @@ model CleanerProfile {
   offboardedAt     DateTime?
   offboardedReason String?
   serviceAreaIds   String[] // ServiceArea ids this cleaner covers
+  // Which basis the business believes applies to this cleaner. Recorded so
+  // it's visible, not a legal determination — the amount of scheduling/
+  // pricing control a business exercises over a ZZP cleaner is exactly what
+  // Dutch schijnzelfstandigheid enforcement looks at, so this belongs in
+  // front of a NL employment lawyer, not decided by this field alone.
+  employmentType   EmploymentType?
 
   // Best-known live position, updated on clock-in/clock-out. Used by
   // dispatch for real proximity ranking instead of inferring location from
@@ -717,6 +741,14 @@ model Customer {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  // Set on the connected account (per business, not platform-wide) after
+  // the customer's first successful Checkout payment with
+  // setup_future_usage: 'off_session' — see stripeClient.chargeSavedPaymentMethod.
+  // Lets recurring jobs auto-charge instead of requiring a fresh iDEAL
+  // redirect for every single visit.
+  stripeCustomerId       String?
+  defaultPaymentMethodId String?
+
   addresses          CustomerAddress[]
   bookings           Booking[]
   recurringSchedules RecurringSchedule[]
@@ -767,6 +799,11 @@ enum PricingModel {
   PER_SQFT
   PER_ROOM
   HOURLY
+}
+
+enum SizeUnit {
+  SQM
+  SQFT
 }
 
 model Service {
@@ -901,6 +938,13 @@ model Booking {
   // homeDetails: {rooms,bathrooms,sqft,frequency}.
   addOns                  Json?
   homeDetails             Json?
+
+  // Dutch consumer law: T&C acceptance must be recorded, and a service
+  // booked to start inside the 14-day cooling-off period needs the
+  // customer's explicit consent to that early start, separate from just
+  // accepting the T&C.
+  termsAcceptedAt        DateTime?
+  earlyStartConsentGiven Boolean   @default(false)
   scheduledStart          DateTime
   scheduledEnd            DateTime
   status                  BookingStatus      @default(REQUESTED)
@@ -1144,9 +1188,17 @@ model AuditLog {
 // CLEANER DOCUMENTS
 // ============================================================
 
+enum EmploymentType {
+  EMPLOYEE
+  ZZP
+}
+
 enum DocumentType {
   ID_CARD
   BACKGROUND_CHECK
+  VOG // Verklaring Omtrent het Gedrag — the standard NL conduct certificate;
+  // BACKGROUND_CHECK alone doesn't say what was actually screened.
+  RIGHT_TO_WORK
   CERTIFICATION
   CONTRACT
   INSURANCE

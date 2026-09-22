@@ -417,8 +417,15 @@ async function createDirectCheckoutSession({
           quantity: 1,
         },
       ],
-      // Omit entirely when 0 so a 0%-fee deployment never sends application_fee_amount: 0.
-      ...(applicationFeeAmount > 0 ? { payment_intent_data: { application_fee_amount: applicationFeeAmount } } : {}),
+      // Save the payment method from this Checkout for later off-session
+      // charges (see chargeSavedPaymentMethod below). Without this, every
+      // recurring job needs the customer to redirect through iDEAL/Checkout
+      // again — iDEAL itself has no recurring-charge mode.
+      payment_intent_data: {
+        setup_future_usage: 'off_session',
+        // Omit entirely when 0 so a 0%-fee deployment never sends application_fee_amount: 0.
+        ...(applicationFeeAmount > 0 ? { application_fee_amount: applicationFeeAmount } : {}),
+      },
       customer_email: customerEmail || undefined,
       success_url: successUrl || `${base}/portal?payment=success&bookingId=${bookingId}`,
       cancel_url: cancelUrl || `${base}/portal?payment=cancelled&bookingId=${bookingId}`,
@@ -427,6 +434,53 @@ async function createDirectCheckoutSession({
     },
     { stripeAccount: connectedAccountId }
   );
+}
+
+/**
+ * Charges a customer's saved payment method for a recurring job, with no
+ * redirect. On an SCA challenge (common in the EU under PSD2) Stripe
+ * throws `authentication_required` instead of succeeding — that's not a
+ * failure to surface as an error, it's a signal for the caller to fall
+ * back to emailing a payment link (createBookingCheckoutSession) so the
+ * customer can complete the challenge themselves.
+ */
+async function chargeSavedPaymentMethod({
+  connectedAccountId,
+  stripeCustomerId,
+  paymentMethodId,
+  amountCents,
+  currency = defaultCurrency(),
+  bookingId,
+  businessId,
+  applyPlatformFee = true,
+}) {
+  if (!connectedAccountId || !stripeCustomerId || !paymentMethodId) {
+    const err = new Error('Missing saved payment method for off-session charge');
+    err.status = 402;
+    throw err;
+  }
+  const applicationFeeAmount = applyPlatformFee ? Math.floor((amountCents * getApplicationFeeBps()) / 10000) : 0;
+  try {
+    const intent = await stripe.paymentIntents.create(
+      {
+        amount: amountCents,
+        currency: (currency || defaultCurrency()).toLowerCase(),
+        customer: stripeCustomerId,
+        payment_method: paymentMethodId,
+        off_session: true,
+        confirm: true,
+        ...(applicationFeeAmount > 0 ? { application_fee_amount: applicationFeeAmount } : {}),
+        metadata: { bookingId, businessId, purpose: 'recurring_job_payment' },
+      },
+      { stripeAccount: connectedAccountId }
+    );
+    return { paymentIntent: intent, requiresAction: false };
+  } catch (err) {
+    if (err.code === 'authentication_required') {
+      return { paymentIntent: err.raw?.payment_intent || null, requiresAction: true };
+    }
+    throw err;
+  }
 }
 
 /** Checkout Session for the job payment itself (or the balance still owed). */
@@ -495,6 +549,7 @@ module.exports = {
   payCleanerTransfer,
   createBookingCheckoutSession,
   createAncillaryCheckoutSession,
+  chargeSavedPaymentMethod,
   expireCheckoutSession,
   createRefund,
   webhookSecrets,

@@ -55,6 +55,13 @@ router.use('/payroll', require('../modules/payroll/payroll.routes'));
 router.use('/waitlist', require('../modules/waitlist/waitlist.routes'));
 router.use('/invoices', require('../modules/invoices/invoices.routes'));
 
+// Custom-domain setup (authenticated) + the public, unauthenticated
+// resolver consumed by the frontend's edge middleware and by Caddy's
+// on_demand_tls "ask" hook — must NOT sit behind authenticate.
+const domainsRoutes = require('../modules/domains/domains.routes');
+router.use('/businesses/me/custom-domain', domainsRoutes);
+router.use('/public', domainsRoutes.publicRouter);
+
 const portalRoutes = require('../modules/customerPortal/customerPortal.routes');
 router.use('/portal', portalRoutes);
 router.use('/portal-embed/:subdomain', portalRoutes.slugRouter);
