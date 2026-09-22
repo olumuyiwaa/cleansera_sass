@@ -4,7 +4,7 @@ const { success } = require('../../utils/response');
 
 async function getEarnings(req, res, next) {
   try {
-    const summary = await payrollService.getEarningsSummaryByCleanerId(req.cleaner.id);
+    const summary = await payrollService.getEarningsSummaryByCleanerId(req.businessId, req.cleaner.id);
     return success(res, 200, summary);
   } catch (err) {
     next(err);

@@ -202,13 +202,20 @@ async function getBusinessPayrollSummary(businessId) {
 /**
  * A cleaner's own earnings summary — used by the cleaner app instead of the
  * old client-side estimate that never reflected a real payroll figure.
+ *
+ * Takes businessId explicitly (not derivable from cleanerId alone) so this
+ * can never be pointed at another business's cleaner — a real risk now
+ * that a cleaner can hold a separate CleanerProfile per business (see the
+ * in-app business switcher): without this, a cleanerId that's valid in one
+ * business but happens to be reused as an id elsewhere would leak that
+ * other business's earnings.
  */
-async function getEarningsSummaryByCleanerId(cleanerId) {
+async function getEarningsSummaryByCleanerId(businessId, cleanerId) {
   const [pending, paid, recent, recentPayouts] = await Promise.all([
-    prisma.cleanerEarning.aggregate({ where: { cleanerId, status: { in: ['PENDING', 'IN_PAYOUT'] } }, _sum: { amountCents: true } }),
-    prisma.cleanerEarning.aggregate({ where: { cleanerId, status: 'PAID' }, _sum: { amountCents: true } }),
-    prisma.cleanerEarning.findMany({ where: { cleanerId }, orderBy: { earnedAt: 'desc' }, take: 20 }),
-    prisma.payout.findMany({ where: { cleanerId }, orderBy: { createdAt: 'desc' }, take: 10 }),
+    prisma.cleanerEarning.aggregate({ where: { businessId, cleanerId, status: { in: ['PENDING', 'IN_PAYOUT'] } }, _sum: { amountCents: true } }),
+    prisma.cleanerEarning.aggregate({ where: { businessId, cleanerId, status: 'PAID' }, _sum: { amountCents: true } }),
+    prisma.cleanerEarning.findMany({ where: { businessId, cleanerId }, orderBy: { earnedAt: 'desc' }, take: 20 }),
+    prisma.payout.findMany({ where: { businessId, cleanerId }, orderBy: { createdAt: 'desc' }, take: 10 }),
   ]);
 
   return {
@@ -220,10 +227,14 @@ async function getEarningsSummaryByCleanerId(cleanerId) {
 }
 
 /** Same as above, resolved from a userId — for callers that only have the logged-in user, not their CleanerProfile. */
-async function getMyEarningsSummary(cleanerUserId, cleanerProfileId) {
-  // cleanerProfileId = the workspace the cleaner is currently in (multi-business cleaners)
+async function getMyEarningsSummary(businessId, cleanerUserId, cleanerProfileId) {
+  // cleanerProfileId = the workspace the cleaner is currently in (multi-business cleaners).
+  // businessId is scoped here too: without it, a cleaner active in more than
+  // one business who calls this without cleanerProfileId would fall back to
+  // whichever of their profiles happens to be oldest — possibly a *different*
+  // business than the one their session is currently in.
   const cleaner = await prisma.cleanerProfile.findFirst({
-    where: { userId: cleanerUserId, status: 'ACTIVE', ...(cleanerProfileId ? { id: cleanerProfileId } : {}) },
+    where: { userId: cleanerUserId, businessId, status: 'ACTIVE', ...(cleanerProfileId ? { id: cleanerProfileId } : {}) },
     orderBy: { createdAt: 'asc' },
   });
   if (!cleaner) {
@@ -231,7 +242,7 @@ async function getMyEarningsSummary(cleanerUserId, cleanerProfileId) {
     err.status = 403;
     throw err;
   }
-  return getEarningsSummaryByCleanerId(cleaner.id);
+  return getEarningsSummaryByCleanerId(businessId, cleaner.id);
 }
 
 /**
