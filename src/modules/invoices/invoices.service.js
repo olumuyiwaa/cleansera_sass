@@ -2,6 +2,7 @@ const prisma = require('../../config/database');
 const { audit } = require('../../utils/audit');
 const { getZonedParts } = require('../../utils/timezone');
 const { vatRateFor, splitGross } = require('../../lib/vat');
+const { generateUBLInvoiceXML } = require('../../lib/ubl');
 
 /**
  * Customer invoices (factuur) with BTW.
@@ -207,4 +208,4 @@ function renderInvoiceHtml(inv, timeZone = 'Europe/Amsterdam') {
 </body></html>`;
 }
 
-module.exports = { issueForBooking, listInvoices, getInvoice, getInvoiceForBooking, renderInvoiceHtml, formatNumber, buildLines, esc };
+module.exports = { issueForBooking, listInvoices, getInvoice, getInvoiceForBooking, renderInvoiceHtml, generateUBLInvoiceXML, formatNumber, buildLines, esc };
