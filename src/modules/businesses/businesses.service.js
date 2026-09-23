@@ -186,6 +186,31 @@ async function updateBusiness(businessId, patch) {
       err.status = 422;
       throw err;
     }
+    // ONLINE_CARD is the one setting getStorefront() does NOT fall back to
+    // offline for (see its canPayOffline derivation) — chosen before Stripe
+    // is actually chargeable, it leaves the storefront offering no way to
+    // pay at all: the customer's booking goes through with no deposit
+    // session (maybeCreateDepositSession silently skips when
+    // stripeChargesEnabled is false) and no offline panel either, so
+    // nothing ever flags the booking as needing payment. BOTH and
+    // MANUAL_OFFLINE are safe regardless of Stripe status and stay allowed.
+    // Only guard an actual change to ONLINE_CARD — a business already in
+    // that state (set before this guard existed, or Stripe disconnected
+    // afterward) must still be able to save an unrelated field, like
+    // updating offline instructions, without being blocked by a preference
+    // they didn't touch this time.
+    if (
+        data.preferredPaymentCollection === 'ONLINE_CARD' &&
+        data.preferredPaymentCollection !== b.preferredPaymentCollection &&
+        !b.stripeChargesEnabled
+    ) {
+      const err = new Error(
+          "Connect Stripe and enable charges before selecting 'card only' — until then, choose " +
+          "'Card (when available) + offline' or 'Offline only' so customers always have a way to pay."
+      );
+      err.status = 422;
+      throw err;
+    }
   }
 
   if ('offlinePaymentInstructions' in data) {

@@ -38,6 +38,22 @@ describe('widget.service.maybeCreateDepositSession', () => {
     expect(createAncillaryCheckoutSession).not.toHaveBeenCalled();
   });
 
+  test('returns null when the business chose offline-only, even though Stripe is chargeable', async () => {
+    // A business can have Stripe connected (e.g. for cleaner payouts) while
+    // still explicitly telling customers to pay offline. Ignoring that and
+    // creating an online session anyway would redirect the customer to
+    // Stripe Checkout against the business's own stated preference.
+    pricing.computeDepositCents.mockResolvedValue(5000);
+    mockPrisma.business.findUnique.mockResolvedValue({
+      stripeChargesEnabled: true,
+      stripeConnectedAccountId: 'acct_123',
+      preferredPaymentCollection: 'MANUAL_OFFLINE',
+    });
+    const result = await maybeCreateDepositSession('biz1', booking);
+    expect(result).toBeNull();
+    expect(createAncillaryCheckoutSession).not.toHaveBeenCalled();
+  });
+
   test('creates a deposit checkout session and records it on the booking', async () => {
     pricing.computeDepositCents.mockResolvedValue(5000);
     mockPrisma.business.findUnique.mockResolvedValue({

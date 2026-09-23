@@ -122,9 +122,16 @@ async function maybeCreateDepositSession(businessId, booking) {
 
   const business = await prisma.business.findUnique({
     where: { id: businessId },
-    select: { stripeConnectedAccountId: true, stripeChargesEnabled: true, currency: true },
+    select: { stripeConnectedAccountId: true, stripeChargesEnabled: true, currency: true, preferredPaymentCollection: true },
   });
   if (!business?.stripeChargesEnabled || !business?.stripeConnectedAccountId) return null;
+  // A business that explicitly chose "offline only" must not have customers
+  // redirected to Stripe Checkout anyway just because the account happens
+  // to still be chargeable (e.g. connected earlier for another reason, or
+  // switched to offline-only after connecting) — this used to ignore the
+  // preference entirely and always create the online session when Stripe
+  // was ready, overriding what the business asked for.
+  if (business.preferredPaymentCollection === 'MANUAL_OFFLINE') return null;
 
   const customer = await prisma.customer.findUnique({ where: { id: booking.customerId } });
 
@@ -249,8 +256,17 @@ async function getStorefront(businessId) {
   const preferred = business?.preferredPaymentCollection || 'BOTH';
   const canPayByCard =
       onlineCardReady && (preferred === 'ONLINE_CARD' || preferred === 'BOTH');
+  // Belt-and-braces on top of the ONLINE_CARD write-guard in
+  // businesses.service.updateBusiness (which stops this preference being
+  // *set* before Stripe is chargeable): if a business set ONLINE_CARD while
+  // connected and then Stripe later stops being chargeable (disconnected,
+  // restricted, a failed re-verification), this must not silently leave a
+  // storefront where neither online nor offline payment is available —
+  // that's a booking with no way to ever get paid. Offline always opens up
+  // as the fallback when card isn't actually usable, regardless of what the
+  // stored preference says.
   const canPayOffline =
-      preferred === 'MANUAL_OFFLINE' || preferred === 'BOTH';
+      preferred === 'MANUAL_OFFLINE' || preferred === 'BOTH' || !canPayByCard;
 
   // The widget used to show a hardcoded "cancel free up to 12 hours before"
   // regardless of what this business actually has configured (including

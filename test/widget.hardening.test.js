@@ -210,4 +210,23 @@ describe('storefront', () => {
     const out = await widget.getStorefront('biz');
     expect(out.cancellationPolicy).toEqual({ windowHours: null, feeType: null, feeValue: null });
   });
+
+  test('never leaves both online and offline payment unavailable, even if ONLINE_CARD was chosen before Stripe was ready', async () => {
+    // businesses.service.updateBusiness now blocks *setting* ONLINE_CARD
+    // before Stripe is chargeable, but this covers every other way the
+    // combination could still occur (data predating that guard, Stripe
+    // disconnecting after the preference was already ONLINE_CARD, etc.) —
+    // a storefront must never end up with no way for the customer to pay.
+    prisma.business.findUnique.mockResolvedValue({
+      id: 'biz', name: 'Clean Co', subdomain: 'clean', timezone: 'Europe/Amsterdam', currency: 'eur',
+      stripeChargesEnabled: false, stripeConnectedAccountId: null,
+      preferredPaymentCollection: 'ONLINE_CARD', branding: null, hours: [],
+    });
+    prisma.service.findMany.mockResolvedValue([{ id: 's1' }]);
+    prisma.serviceArea.count.mockResolvedValue(1);
+    prisma.businessPricing.findUnique.mockResolvedValue(null);
+
+    const out = await widget.getStorefront('biz');
+    expect(out.payment).toEqual({ onlineCardReady: false, offlineAccepted: true, offlinePaymentInstructions: null });
+  });
 });
