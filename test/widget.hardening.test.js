@@ -4,6 +4,7 @@ jest.mock('../src/config/database.js', () => {
     serviceArea: { findMany: jest.fn().mockResolvedValue([]), count: jest.fn() },
     business: { findUnique: jest.fn() },
     businessHours: { findMany: jest.fn() },
+    businessPricing: { findUnique: jest.fn().mockResolvedValue(null) },
     booking: { count: jest.fn().mockResolvedValue(0), create: jest.fn(), update: jest.fn() },
     customer: { findFirst: jest.fn().mockResolvedValue(null), upsert: jest.fn(), findUnique: jest.fn() },
     coupon: { findFirst: jest.fn(), updateMany: jest.fn(), update: jest.fn(), create: jest.fn() },
@@ -180,5 +181,33 @@ describe('storefront', () => {
     // payment info is still derived from the private fields
     expect(out.payment).toMatchObject({ onlineCardReady: true, offlineAccepted: true });
     expect(out.onboardingComplete).toBe(true);
+  });
+
+  test('exposes the real configured cancellation policy, not a hardcoded default', async () => {
+    prisma.business.findUnique.mockResolvedValue({
+      id: 'biz', name: 'Clean Co', subdomain: 'clean', timezone: 'Europe/Amsterdam', currency: 'eur',
+      preferredPaymentCollection: 'BOTH', branding: null, hours: [],
+    });
+    prisma.service.findMany.mockResolvedValue([{ id: 's1' }]);
+    prisma.serviceArea.count.mockResolvedValue(1);
+    prisma.businessPricing.findUnique.mockResolvedValue({
+      cancellationWindowHours: 24, cancellationFeeType: 'PERCENT', cancellationFeeValue: 50,
+    });
+
+    const out = await widget.getStorefront('biz');
+    expect(out.cancellationPolicy).toEqual({ windowHours: 24, feeType: 'PERCENT', feeValue: 50 });
+  });
+
+  test('a business with no cancellation policy configured reports free-anytime (null window), not a made-up default', async () => {
+    prisma.business.findUnique.mockResolvedValue({
+      id: 'biz', name: 'Clean Co', subdomain: 'clean', timezone: 'Europe/Amsterdam', currency: 'eur',
+      preferredPaymentCollection: 'BOTH', branding: null, hours: [],
+    });
+    prisma.service.findMany.mockResolvedValue([{ id: 's1' }]);
+    prisma.serviceArea.count.mockResolvedValue(1);
+    prisma.businessPricing.findUnique.mockResolvedValue(null);
+
+    const out = await widget.getStorefront('biz');
+    expect(out.cancellationPolicy).toEqual({ windowHours: null, feeType: null, feeValue: null });
   });
 });

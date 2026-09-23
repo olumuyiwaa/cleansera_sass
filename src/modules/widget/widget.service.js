@@ -252,6 +252,14 @@ async function getStorefront(businessId) {
   const canPayOffline =
       preferred === 'MANUAL_OFFLINE' || preferred === 'BOTH';
 
+  // The widget used to show a hardcoded "cancel free up to 12 hours before"
+  // regardless of what this business actually has configured (including
+  // businesses with no fee at all) — a real risk of the storefront telling
+  // a customer one policy while cancellationPolicy.js enforces another.
+  // null cancellationWindowHours here means "free anytime", matching
+  // evaluateCancellation's own default.
+  const pricing = await prisma.businessPricing.findUnique({ where: { businessId } });
+
   return {
     business: toPublicBusiness(business),
     services,
@@ -260,6 +268,11 @@ async function getStorefront(businessId) {
       onlineCardReady: canPayByCard,
       offlineAccepted: canPayOffline,
       offlinePaymentInstructions: business?.offlinePaymentInstructions || null,
+    },
+    cancellationPolicy: {
+      windowHours: pricing?.cancellationWindowHours ?? null,
+      feeType: pricing?.cancellationFeeType ?? null,
+      feeValue: pricing?.cancellationFeeValue ?? null,
     },
   };
 }
