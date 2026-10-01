@@ -1,5 +1,6 @@
 const prisma = require('../../config/database');
 const { audit } = require('../../utils/audit');
+const { normalizePhone, findCustomerByPhone } = require('../../lib/phone');
 
 async function listCustomers(businessId, { q, take = 200 } = {}) {
   const where = { businessId };
@@ -23,7 +24,14 @@ async function listCustomers(businessId, { q, take = 200 } = {}) {
 }
 
 async function createCustomer(businessId, actorUserId, payload) {
-  const { firstName, lastName, email, phone, notes, address } = payload;
+  const { firstName, lastName, email, notes, address } = payload;
+  const phone = normalizePhone(payload.phone);
+  // The unique index only catches byte-identical numbers; check every format.
+  if (await findCustomerByPhone(prisma, businessId, phone)) {
+    const err = new Error('A customer with this phone number already exists');
+    err.status = 409;
+    throw err;
+  }
   const created = await prisma.customer.create({
     data: {
       businessId,
@@ -121,6 +129,15 @@ async function updateCustomer(businessId, id, actorUserId, patch) {
   const data = {};
   for (const k of allowed) {
     if (patch[k] !== undefined) data[k] = patch[k];
+  }
+  if (data.phone !== undefined) {
+    data.phone = normalizePhone(data.phone);
+    const clash = await findCustomerByPhone(prisma, businessId, data.phone);
+    if (clash && clash.id !== id) {
+      const err = new Error('A customer with this phone number already exists');
+      err.status = 409;
+      throw err;
+    }
   }
   const updated = await prisma.customer.update({ where: { id }, data, include: { addresses: true } });
   await audit({ businessId, actorUserId, action: 'CUSTOMER_UPDATED', entityType: 'Customer', entityId: id, metadata: data });

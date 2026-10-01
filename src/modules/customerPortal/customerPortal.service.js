@@ -8,6 +8,7 @@ const prisma = require('../../config/database');
 const notificationClient = require('../../lib/notificationClient');
 const logger = require('../../config/logger');
 const { createAncillaryCheckoutSession } = require('../../lib/stripeClient');
+const { findCustomerByPhone } = require('../../lib/phone');
 
 const OTP_TTL_MS = 10 * 60 * 1000;
 const OTP_MAX_REQUESTS_PER_WINDOW = 3;
@@ -55,9 +56,9 @@ async function findOrCreatePortalUser(customer) {
 const { generateNumericCode, hashOtp: hashCode } = require('../../lib/otp');
 
 async function requestAccess(businessId, { phone }) {
-  const customer = await prisma.customer.findUnique({
-    where: { businessId_phone: { businessId, phone } },
-  });
+  // Matches the number however the customer typed it (and however it was
+  // stored before phones were normalised) - see lib/phone.js.
+  const customer = await findCustomerByPhone(prisma, businessId, phone);
   if (!customer) {
     // Do not leak existence — still return success shape
     return { sent: true };
@@ -111,9 +112,7 @@ async function verifyAccess(businessId, { phone, code }) {
     return err;
   };
 
-  const customer = await prisma.customer.findUnique({
-    where: { businessId_phone: { businessId, phone } },
-  });
+  const customer = await findCustomerByPhone(prisma, businessId, phone);
   if (!customer) throw invalid();
 
   const user = await prisma.user.findUnique({ where: { email: portalEmailFor(customer.id) } });

@@ -131,6 +131,7 @@ See `.env.example` for the full list. The ones worth knowing about going in:
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRETS` | Platform billing + connected-account job payments |
 | `GOOGLE_DISTANCE_MATRIX_API_KEY` | ETA-based dispatch ranking (optional) |
 | `DEFAULT_CURRENCY` | Defaults to `eur` |
+| `DEFAULT_PHONE_COUNTRY_CODE` | Calling code for numbers typed nationally (`06 ...`). Defaults to `31` |
 
 ## Multi-tenancy
 

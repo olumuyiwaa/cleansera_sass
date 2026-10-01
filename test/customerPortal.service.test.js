@@ -1,5 +1,5 @@
 jest.mock('../src/config/database.js', () => ({
-  customer: { findUnique: jest.fn() },
+  customer: { findFirst: jest.fn() },
   user: { findUnique: jest.fn(), create: jest.fn(), findFirst: jest.fn() },
   otpCode: { count: jest.fn(), updateMany: jest.fn(), create: jest.fn(), findFirst: jest.fn() },
 }));
@@ -23,7 +23,7 @@ const hash = (userId, code) => crypto.createHash('sha256').update(`${userId}:${c
 describe('customerPortal access', () => {
   beforeEach(() => {
     jest.resetAllMocks();
-    prisma.customer.findUnique.mockResolvedValue(customer);
+    prisma.customer.findFirst.mockResolvedValue(customer);
     prisma.user.findUnique.mockResolvedValue(portalUser);
   });
 
@@ -73,6 +73,21 @@ describe('customerPortal access', () => {
     const payload = jwt.verify(token, 'test-secret');
     expect(payload).toMatchObject({ sub: 'pu1', businessId: 'biz1', portalCustomerId: 'cust1', scope: 'CUSTOMER_PORTAL', aud: 'customer-portal' });
     expect(prisma.otpCode.findFirst.mock.calls[0][0].where.code).toBe(hash('pu1', '123456'));
+  });
+
+  test('finds a customer however the phone was typed or stored (06 vs +31)', async () => {
+    await service.requestAccess('biz1', { phone: '06 12345678' });
+    const where = prisma.customer.findFirst.mock.calls[0][0].where;
+    expect(where.businessId).toBe('biz1');
+    // A customer stored as "0612345678" or "+31612345678" must both match.
+    expect(where.phone.in).toEqual(expect.arrayContaining(['+31612345678', '0612345678', '06 12345678']));
+  });
+
+  test('an unknown phone still gets the normal response shape (no account enumeration)', async () => {
+    prisma.customer.findFirst.mockResolvedValue(null);
+    const result = await service.requestAccess('biz1', { phone: '+31600000000' });
+    expect(result).toEqual({ sent: true });
+    expect(prisma.otpCode.create).not.toHaveBeenCalled();
   });
 });
 

@@ -1,4 +1,5 @@
 const prisma = require('../../config/database');
+const { normalizePhone, findCustomerByPhone } = require('../../lib/phone');
 const { isWithinServiceAreas } = require('../../utils/geo');
 const { createAncillaryCheckoutSession } = require('../../lib/stripeClient');
 const { toPublicBranding } = require('../../lib/branding');
@@ -228,10 +229,16 @@ async function applyGiftCardToBooking(businessId, booking, giftCardCode) {
  * from the dashboard.
  */
 async function upsertGuestCustomer(client, businessId, { firstName, lastName, email, phone }) {
+  // The same person types their number several ways; match every stored form so
+  // a booking never creates a duplicate customer, then store new customers in
+  // normalised form (see lib/phone.js).
+  const existing = await findCustomerByPhone(client, businessId, phone);
+  if (existing) return existing;
+  const normalized = normalizePhone(phone);
   return client.customer.upsert({
-    where: { businessId_phone: { businessId, phone } },
+    where: { businessId_phone: { businessId, phone: normalized } },
     update: {},
-    create: { businessId, firstName, lastName, email, phone },
+    create: { businessId, firstName, lastName, email, phone: normalized },
   });
 }
 
