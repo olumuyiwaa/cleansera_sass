@@ -170,13 +170,18 @@ describe('storefront', () => {
       id: 'biz', name: 'Clean Co', subdomain: 'clean', timezone: 'Europe/Amsterdam', currency: 'eur',
       stripeConnectedAccountId: 'acct_secret', stripeChargesEnabled: true, parentBusinessId: 'org', customDomain: 'x.nl',
       preferredPaymentCollection: 'BOTH', offlinePaymentInstructions: 'IBAN ...', branding: null,
+      // contactPhone is public (shown on the storefront); contactEmail is private - it is
+      // where contact-form messages are delivered and must never reach this payload.
+      contactPhone: '+31 20 123 4567', contactEmail: 'private-inbox@clean.nl',
       hours: [{ dayOfWeek: 1, openTime: '08:00', closeTime: '18:00', isClosed: false, id: 'h1', businessId: 'biz' }],
     });
     prisma.service.findMany.mockResolvedValue([{ id: 's1' }]);
     prisma.serviceArea.count.mockResolvedValue(1);
     const out = await widget.getStorefront('biz');
-    expect(Object.keys(out.business).sort()).toEqual(['branding', 'currency', 'hours', 'id', 'name', 'subdomain', 'timezone']);
+    expect(Object.keys(out.business).sort()).toEqual(['branding', 'currency', 'hours', 'id', 'name', 'phone', 'subdomain', 'timezone']);
+    expect(out.business.phone).toBe('+31 20 123 4567');
     expect(JSON.stringify(out)).not.toContain('acct_secret');
+    expect(JSON.stringify(out)).not.toContain('private-inbox@clean.nl');
     expect(out.business.hours[0]).toEqual({ dayOfWeek: 1, openTime: '08:00', closeTime: '18:00', isClosed: false });
     // payment info is still derived from the private fields
     expect(out.payment).toMatchObject({ onlineCardReady: true, offlineAccepted: true });

@@ -163,6 +163,13 @@ model Business {
   preferredPaymentCollection PreferredPaymentCollection @default(BOTH)
   offlinePaymentInstructions String?                    @db.Text
 
+  // Contact details. contactEmail is PRIVATE: it is where messages from the
+  // public site are delivered and the Reply-To on staff replies, so it must never
+  // appear in a public payload (widget.service.toPublicBusiness is an
+  // allowlist and deliberately omits it). contactPhone is shown on the storefront.
+  contactEmail String?
+  contactPhone String?
+
   // Invoicing / BTW. Prices in CleanSera are VAT-INCLUSIVE (consumer prices in
   // NL must be); invoices extract the VAT from the gross amount. Default 21%
   // is the Dutch standard rate. Required (kvk + vat number) before an invoice
@@ -1258,6 +1265,14 @@ model SupportTicket {
   bookingId   String?
   assignedTo  String?
   createdBy   String?
+  // Who to reply to. Filled for tickets that arrive from the public site's
+  // contact form (a visitor, not a signed-in customer) and for staff-created
+  // tickets where an email is entered. Replies are sent to contactEmail.
+  contactName  String?
+  contactEmail String?
+  contactPhone String?
+  // 'WEBSITE' for the public contact form, null when staff created it.
+  source       String?
   resolvedAt  DateTime?
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
@@ -1275,9 +1290,40 @@ model SupportTicketMessage {
   authorId   String?
   body       String
   isInternal Boolean       @default(false)
+  // Set only when the reply was actually handed to the mail provider. Null for
+  // internal notes, for tickets with no contact email, and when email is not
+  // configured or failed - the UI shows that state instead of claiming delivery.
+  emailedAt  DateTime?
   createdAt  DateTime      @default(now())
 
   @@index([ticketId])
+}
+
+// Messages sent to CleanSera itself from the marketing site (support form and
+// demo / contact request). Platform-level, so deliberately not tied to a
+// business. Strings rather than enums so a new kind or status needs no migration:
+// kind: SUPPORT | DEMO     status: NEW | IN_PROGRESS | RESOLVED | SPAM
+model PlatformInquiry {
+  id         String    @id @default(cuid())
+  reference  String    @unique
+  kind       String
+  name       String
+  email      String
+  company    String?
+  phone      String?
+  subject    String?
+  category   String?
+  message    String?   @db.Text
+  source     String?
+  status     String    @default("NEW")
+  handledBy  String?
+  notifiedAt DateTime?
+  ackSentAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([status, createdAt])
+  @@index([kind, createdAt])
 }
 
 // ============================================================

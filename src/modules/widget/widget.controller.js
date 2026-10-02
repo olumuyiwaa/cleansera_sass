@@ -56,4 +56,20 @@ async function joinWaitlist(req, res, next) {
   }
 }
 
-module.exports = { storefront, quote, slots, submitBooking, giftCardBalance, joinWaitlist };
+async function contact(req, res, next) {
+  try {
+    // Honeypot filled in => a bot. Answer like a success so it learns nothing,
+    // but store and send nothing.
+    if (req.body.website) {
+      const fake = Math.random().toString(36).slice(2, 10).toUpperCase().padEnd(8, 'X');
+      return success(res, 201, { reference: `T-${fake}` }, 'Message received');
+    }
+    const supportTickets = require('../supportTickets/supportTickets.service');
+    const data = await supportTickets.createWebsiteTicket(req.business, req.body);
+    return success(res, 201, data, 'Message received');
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { storefront, quote, slots, submitBooking, giftCardBalance, joinWaitlist, contact };

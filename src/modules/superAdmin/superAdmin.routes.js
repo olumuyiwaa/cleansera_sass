@@ -54,6 +54,15 @@ router.patch(
   controller.updateTicketStatus
 );
 
+// Platform inbox: support messages and demo requests from the marketing site
+router.get('/inquiries', controller.listInquiries);
+router.patch(
+  '/inquiries/:id/status',
+  [param('id').notEmpty(), body('status').isIn(['NEW', 'IN_PROGRESS', 'RESOLVED', 'SPAM'])],
+  validate,
+  controller.updateInquiryStatus
+);
+
 // Audit logs
 router.get('/audit-logs', controller.listAuditLogs);
 

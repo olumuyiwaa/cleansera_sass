@@ -26,6 +26,17 @@ const widgetSubmitLimiter = rateLimit({
   message: { success: false, message: 'Too many booking attempts from this address, please try again later' },
 });
 
+// Public marketing-site forms (support message, demo request): same shape as the
+// widget submit limiter but with wording that fits, and a separate counter so
+// a visitor browsing a storefront is not locked out of the contact form.
+const publicFormLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many messages from this address, please try again later' },
+});
+
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 300,
@@ -85,4 +96,5 @@ module.exports = {
   refreshLimiter,
   sensitiveActionLimiter,
   widgetSubmitLimiter,
+  publicFormLimiter,
 };

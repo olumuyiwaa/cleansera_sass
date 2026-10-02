@@ -8,6 +8,22 @@ const { requireCaptcha } = require('../../lib/captcha');
 const validate = require('../../middleware/validate');
 const { requireAcceptingBookings } = require('../../middleware/requireActiveSubscription');
 
+// Public contact form on a business's site. Free-text phone (it is a reply
+// detail here, not a lookup key); every field bounded so a bot cannot store 2 MB.
+const contactValidators = [
+  body('name').isString().trim().isLength({ min: 1, max: 100 }).withMessage('Please enter your name'),
+  body('email').isString().trim().isLength({ max: 254 }).isEmail().withMessage('Please enter a valid email address'),
+  body('phone')
+    .optional({ nullable: true, checkFalsy: true })
+    .isString()
+    .trim()
+    .matches(/^[+\d\s().-]{5,40}$/)
+    .withMessage('Please enter a valid phone number'),
+  body('message').isString().trim().isLength({ min: 10, max: 3000 }).withMessage('Message must be between 10 and 3000 characters'),
+  // Honeypot: real visitors never see or fill this.
+  body('website').optional({ nullable: true }).isString().isLength({ max: 200 }),
+];
+
 const bookingValidators = [
   body('firstName').trim().notEmpty(),
   body('lastName').trim().notEmpty(),
@@ -55,6 +71,7 @@ function widgetRoutesFor(resolveBusiness) {
     validate,
     controller.joinWaitlist
   );
+  router.post('/contact', widgetSubmitLimiter, requireCaptcha(), contactValidators, validate, controller.contact);
   router.post('/bookings', widgetSubmitLimiter, requireCaptcha(), requireAcceptingBookings, bookingValidators, validate, controller.submitBooking);
 
   return router;

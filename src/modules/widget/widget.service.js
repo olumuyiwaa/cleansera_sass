@@ -92,6 +92,10 @@ function toPublicBusiness(business) {
     subdomain: business.subdomain,
     timezone: business.timezone,
     currency: business.currency,
+    // Public phone number for the storefront footer. contactEmail is deliberately
+    // NOT here: it is where contact-form messages are delivered, and publishing it
+    // would let bots skip the captcha-protected form and mail the business directly.
+    phone: business.contactPhone || null,
     branding: business.branding,
     hours: (business.hours || []).map((h) => ({
       dayOfWeek: h.dayOfWeek,

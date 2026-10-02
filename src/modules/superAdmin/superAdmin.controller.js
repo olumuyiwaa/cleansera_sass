@@ -160,6 +160,35 @@ async function updateTicketStatus(req, res, next) {
   }
 }
 
+async function listInquiries(req, res, next) {
+  try {
+    const data = await require('../platformInquiries/platformInquiries.service').listInquiries({
+      status: req.query.status,
+      kind: req.query.kind,
+      q: req.query.q,
+      page: req.query.page,
+      limit: req.query.limit,
+    });
+    return success(res, 200, data);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updateInquiryStatus(req, res, next) {
+  try {
+    const data = await require('../platformInquiries/platformInquiries.service').setInquiryStatus(
+      req.params.id,
+      req.body.status,
+      req.user.id
+    );
+    return success(res, 200, data, 'Inquiry updated');
+  } catch (err) {
+    if (err.status === 404) return error(res, 404, err.message);
+    next(err);
+  }
+}
+
 async function listAuditLogs(req, res, next) {
   try {
     const page = parseInt(req.query.page, 10) || 1;
@@ -187,5 +216,7 @@ module.exports = {
   setUserActive,
   listTickets,
   updateTicketStatus,
+  listInquiries,
+  updateInquiryStatus,
   listAuditLogs,
 };

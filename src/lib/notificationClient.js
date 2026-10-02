@@ -63,13 +63,13 @@ try {
   fcmApp = undefined;
 }
 
-async function _sendEmailNow({ to, subject, text, html, from }) {
+async function _sendEmailNow({ to, subject, text, html, from, replyTo }) {
   from = from || process.env.EMAIL_FROM || 'no-reply@cleansera.example';
   if (process.env.SENDGRID_API_KEY) {
     try {
       // await, so a SendGrid failure is caught here and falls through to SMTP
       // (returning the bare promise skipped the catch entirely).
-      return await sendgrid.send({ to, from, subject, text, html });
+      return await sendgrid.send({ to, from, subject, text, html, ...(replyTo ? { replyTo } : {}) });
     } catch (e) {
       logger.error('sendGrid send failed, falling back to SMTP', e);
     }
@@ -80,7 +80,7 @@ async function _sendEmailNow({ to, subject, text, html, from }) {
     return Promise.resolve();
   }
 
-  return transporter.sendMail({ from, to, subject, text, html });
+  return transporter.sendMail({ from, to, subject, text, html, ...(replyTo ? { replyTo } : {}) });
 }
 
 async function _sendSmsNow({ to, body }) {
@@ -146,4 +146,13 @@ async function sendPush(payload) {
   return _sendPushNow(payload);
 }
 
-module.exports = { sendEmail, sendSms, sendPush, _sendEmailNow, _sendSmsNow, _sendPushNow };
+/**
+ * True when a mail provider is configured. Without one, sendEmail() only logs
+ * and resolves, so callers that tell a user "we emailed them" must check this
+ * rather than trust a resolved promise.
+ */
+function isEmailConfigured() {
+  return !!(process.env.SENDGRID_API_KEY || transporter);
+}
+
+module.exports = { sendEmail, sendSms, sendPush, isEmailConfigured, _sendEmailNow, _sendSmsNow, _sendPushNow };

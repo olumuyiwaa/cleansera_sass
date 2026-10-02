@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { pick } = require('../../utils/pick');
 const { isValidTimeZone } = require('../../utils/timezone');
 const { normalizeKvk, normalizeVatNumber, normalizeIban } = require('../../lib/taxIdentifiers');
+const { isEmailAddress, isPhoneText } = require('../../lib/contactMail');
 const { PUBLIC_IMAGE_TYPES, prefixes, assertKeyUnderPrefix, assertContentType } = require('../../lib/storageKeys');
 
 const ADDRESS_FIELDS = ['label', 'line1', 'line2', 'city', 'state', 'postalCode', 'country', 'latitude', 'longitude', 'isPrimary'];
@@ -109,6 +110,9 @@ const PATCHABLE_BUSINESS_FIELDS = [
   'vatNumber',
   'invoiceIban',
   'vatRateBps',
+  // Contact details (contactEmail is private - see schema.prisma)
+  'contactEmail',
+  'contactPhone',
 ];
 
 const ALLOWED_PAYMENT_COLLECTION = ['ONLINE_CARD', 'MANUAL_OFFLINE', 'BOTH'];
@@ -169,6 +173,20 @@ async function updateBusiness(businessId, patch) {
   if ('vatNumber' in data) {
     if (cleared(data.vatNumber)) data.vatNumber = null;
     else if (!(data.vatNumber = normalizeVatNumber(data.vatNumber))) throw invalid('vatNumber must be a valid BTW-id (e.g. NL123456789B01)');
+  }
+  if ('contactEmail' in data) {
+    if (cleared(data.contactEmail)) data.contactEmail = null;
+    else {
+      data.contactEmail = String(data.contactEmail).trim().toLowerCase();
+      if (!isEmailAddress(data.contactEmail)) throw invalid('contactEmail must be a valid email address');
+    }
+  }
+  if ('contactPhone' in data) {
+    if (cleared(data.contactPhone)) data.contactPhone = null;
+    else {
+      data.contactPhone = String(data.contactPhone).trim();
+      if (!isPhoneText(data.contactPhone)) throw invalid('contactPhone must be a valid phone number');
+    }
   }
   if ('invoiceIban' in data) {
     if (cleared(data.invoiceIban)) data.invoiceIban = null;
