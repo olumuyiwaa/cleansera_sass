@@ -1,4 +1,5 @@
 const prisma = require('../../config/database');
+const { assertSubdomainAllowed } = require('../../lib/reservedSlugs');
 const { getPublicUrl, getPublicUploadUrl } = require('../../config/storage');
 const { toPublicBranding } = require('../../lib/branding');
 const crypto = require('crypto');
@@ -24,6 +25,7 @@ async function listLocations(parentBusinessId) {
 }
 
 async function createLocation(parentBusinessId, actorUserId, { name, subdomain, timezone }) {
+  assertSubdomainAllowed(subdomain);
   if (timezone && !isValidTimeZone(timezone)) {
     const err = new Error('timezone must be a valid IANA time zone, e.g. Europe/Amsterdam');
     err.status = 422;

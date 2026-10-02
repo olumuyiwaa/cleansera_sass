@@ -1,4 +1,5 @@
 const bcrypt = require('bcryptjs');
+const { assertSubdomainAllowed } = require('../../lib/reservedSlugs');
 const prisma = require('../../config/database');
 const { signAccessToken, signRefreshToken } = require('../../utils/jwt');
 const { audit } = require('../../utils/audit');
@@ -49,6 +50,9 @@ async function verifyTotp(user, code) {
  * This is the tenant-creation entry point — every business starts here.
  */
 async function registerBusiness({ businessName, subdomain, firstName, lastName, email, phone, password }) {
+  // First, before any lookup: a reserved name is rejected the same way for everyone.
+  assertSubdomainAllowed(subdomain);
+
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
     const err = new Error('An account with this email already exists');
