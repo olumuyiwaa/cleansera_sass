@@ -178,7 +178,7 @@ async function verifyAccess(businessId, { phone, code }) {
 async function listMyBookings(businessId, customerId) {
   return prisma.booking.findMany({
     where: { businessId, customerId },
-    include: { service: true, assignments: { include: { cleaner: { include: { user: { select: { firstName: true, lastName: true } } } } } } },
+    include: { service: true, review: true, assignments: { include: { cleaner: { include: { user: { select: { firstName: true, lastName: true } } } } } } },
     orderBy: { scheduledStart: 'desc' },
     take: 100,
   });
@@ -187,14 +187,32 @@ async function listMyBookings(businessId, customerId) {
 async function getMyBooking(businessId, customerId, bookingId) {
   const b = await prisma.booking.findFirst({
     where: { id: bookingId, businessId, customerId },
-    include: { service: true, checklist: true, photos: true, review: true },
+    include: {
+      service: true,
+      checklist: true,
+      photos: true,
+      review: true,
+      assignments: { include: { cleaner: { include: { user: { select: { firstName: true, lastName: true } } } } } },
+    },
   });
   if (!b) {
     const err = new Error('Booking not found');
     err.status = 404;
     throw err;
   }
-  return b;
+  // Photo rows only hold private storage keys; hand the customer short-lived
+  // signed URLs so the portal can show before/after photos.
+  const { getSignedDownloadUrl } = require('../../config/storage');
+  const photos = await Promise.all(
+    (b.photos || []).map(async (ph) => {
+      try {
+        return { ...ph, url: await getSignedDownloadUrl(ph.storageKey) };
+      } catch (e) {
+        return { ...ph, url: null };
+      }
+    })
+  );
+  return { ...b, photos };
 }
 
 /**
