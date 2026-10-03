@@ -10,7 +10,7 @@ const spaces = new S3Client({
     accessKeyId: process.env.DO_SPACES_KEY || '',
     secretAccessKey: process.env.DO_SPACES_SECRET || '',
   },
-  forcePathStyle: false,
+  forcePathStyle: true,
 });
 
 async function getSignedUploadUrl(key, contentType, expiresSeconds = 300) {
